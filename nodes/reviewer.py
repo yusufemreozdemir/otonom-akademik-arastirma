@@ -1,4 +1,4 @@
-from langchain_core.messages import SystemMessage
+from typing import List
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
@@ -9,6 +9,10 @@ class ReviewOutput(BaseModel):
     is_satisfactory: bool = Field(description = "Rapor, belirlenen standartlara ve plana uygun mu?")
     feedback: str = Field(description = "Eğer eksik varsa detaylı eleştiri, yoksa onay mesajı.")
     score: int = Field(description = "Rapora 100 üzerinden verilen akademik kalite notu.")
+    failed_sections: List[str] = Field(
+        description = "Sorunlu bölümlerin BAŞLIKLARI listesi. Sadece yeniden yazılması gereken bölümleri belirt. Sorun yoksa boş liste.",
+        default_factory=list
+    )
 
 def reviewer_node(state: ResearchState):
     print("--- REVIEWER NODE: KALİTE KONTROL UZMANI ---")
@@ -57,6 +61,13 @@ def reviewer_node(state: ResearchState):
         KARAR:
         - is_satisfactory = True: Puan 60 veya üzeriyse.
         - is_satisfactory = False: Puan 60'ın altındaysa. Hangi bölümde ne sorun olduğunu detaylıca açıkla.
+        
+        SORUNLU BÖLÜMLER:
+        - failed_sections listesine SADECE yeniden yazılması gereken bölümlerin BAŞLIKLARINI ekle.
+        - Başlıkları rapordaki ## işaretinden sonraki haliyle AYNEN yaz.
+        - Sorun sadece kaynak bütünlüğüyse (atıf eksikliği), bölümü failed_sections'a EKLEME — 
+          bu tür sorunlar editör tarafından otomatik düzeltilir.
+        - Sadece İÇERİK EKSİKLİĞİ olan (cümle ortasında kesilmiş, yarım kalmış) bölümleri ekle.
     """
     
     prompt = ChatPromptTemplate.from_messages([
@@ -75,10 +86,12 @@ def reviewer_node(state: ResearchState):
     print(f"\n📊 KALİTE RAPORU")
     print(f"   Puan: {response.score}/100")
     print(f"   Karar: {'✅ GEÇTİ' if response.is_satisfactory else '❌ KALDI'}")
+    if response.failed_sections:
+        print(f"   Sorunlu Bölümler: {response.failed_sections}")
     print(f"   Feedback: {response.feedback}\n")
 
     return {
         "feedback": response.feedback,
-        # İleride döngü kurarsak, Reviewer'ın notuna göre is_complete False yapılabilir.
+        "failed_section_titles": response.failed_sections,
         "is_complete": response.is_satisfactory 
     }

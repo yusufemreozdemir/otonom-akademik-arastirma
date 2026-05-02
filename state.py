@@ -40,3 +40,4 @@ class ResearchState(TypedDict):
     feedback: str # Reviewerin rapor hakkındaki geri bildirimi
     filterer_feedback: str # Filterer neden beğenmedi? (Manager'a not)
     review_count: int # Reviewer kaç kez raporu geri gönderdi? (Max 3)
+    failed_section_titles: List[str] # Reviewer'ın sorunlu bulduğu bölüm başlıkları

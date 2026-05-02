@@ -16,46 +16,41 @@ class ResearchAnalysis(BaseModel):
     deep_analysis: str = Field(description="Teknik derinlik ve metodolojik bulgular.")
     report_outline: List[str] = Field(description="Raporun bölüm başlıkları listesi (Sıralı ve Mantıksal).")
 
-# YENİLİK: Tek string yerine Bölüm Nesnesi
 class SectionOutput(BaseModel):
     title: str = Field(description="Bölümün başlığı.")
     content: str = Field(description="Bölümün markdown içeriği (En az 400 kelime).")
 
-# YENİLİK: Liste yapısı. Model bu listeyi doldurmak zorunda hissedecek.
-class BatchContent(BaseModel):
-    sections: List[SectionOutput] = Field(description="Yazılan bölümlerin listesi.")
-
-# --- BÖLÜM TAMAMLIK KONTROLÜ ---
+# --- YARDIMCI FONKSİYONLAR ---
 
 def _is_section_complete(content: str) -> bool:
     """Bir bölümün cümle ortasında kesilip kesilmediğini kontrol eder."""
     if not content or len(content.strip()) < 100:
         return False
-    
     stripped = content.strip()
-    
-    # Cümle sonu işaretleriyle bitiyorsa tamam
     if stripped[-1] in '.!?)»"\'':
         return True
-    
-    # LaTeX komutuyla bitiyorsa ($...$ veya \\text{...}) kabul et
     if stripped.endswith('$') or stripped.endswith('}'):
         return True
-    
-    # Son 50 karakterde nokta var mı kontrol et — belki sadece boşluk kalmış
     last_part = stripped[-50:]
     if '.' in last_part and stripped.rstrip()[-1] in '.!?)»"\'$}':
         return True
-    
     return False
 
-# --- KAYNAK DOĞRULAMA ---
+def _escape_braces(text):
+    if isinstance(text, str):
+        return text.replace("{", "{{").replace("}", "}}")
+    elif isinstance(text, list):
+        return [_escape_braces(item) for item in text]
+    return str(text).replace("{", "{{").replace("}", "}}")
+
+def _fuzzy_match(title_a: str, title_b: str) -> bool:
+    """İki bölüm başlığının benzer olup olmadığını kontrol eder."""
+    a = title_a.lower().strip()[:40]
+    b = title_b.lower().strip()[:40]
+    return a in b or b in a
 
 def _build_valid_citation_set(state: ResearchState) -> set:
-    """State'teki gerçek kaynaklardan geçerli atıf isimlerinin setini oluşturur."""
     valid_citations = set()
-    
-    # Akademik kaynaklar — yazarın soyadı
     for s in state.get("arxiv_summaries", []):
         if s.get("entry_id") in state.get("selected_paper_ids", []):
             authors = s.get("authors", [])
@@ -63,36 +58,60 @@ def _build_valid_citation_set(state: ResearchState) -> set:
                 first_author_surname = authors[0].split()[-1] if authors[0] else ""
                 if first_author_surname:
                     valid_citations.add(first_author_surname)
-    
-    # Web kaynakları — site/başlık isimleri
     for src in state.get("web_sources", []):
         title = src.get("title", "")
         if title:
             valid_citations.add(title)
-            # Kısa adları da ekle (e.g. "AWS", "IBM", "DataCamp")
             for word in title.split():
-                if word[0].isupper() and len(word) >= 2:
+                if len(word) >= 2 and word[0].isupper():
                     valid_citations.add(word)
-    
     return valid_citations
 
 def _find_invalid_citations(report_text: str, valid_set: set) -> List[str]:
-    """Rapor metnindeki atıfları kontrol eder, kaynak havuzunda olmayanları döndürür."""
-    # (Yazar et al., Yıl) formatındaki atıfları bul
     author_citations = re.findall(r'(\w[\w\s]+?et al\.\s*,?\s*\d{4})', report_text)
-    # (Site Adı) veya (Site Adı; ...) formatındaki atıfları bul  
-    paren_citations = re.findall(r'\(([^)]+)\)', report_text)
-    
     invalid = []
-    
     for cite in author_citations:
-        # Yazarın soyadını çıkar
         surname = cite.split('et al')[0].strip().split()[-1]
         if surname and surname not in valid_set:
             invalid.append(cite.strip())
-    
     return list(set(invalid))
 
+# --- BÖLÜM TAMAMLAMA (KALDIĞI YERDEN DEVAM) ---
+
+def _complete_incomplete_section(incomplete_content: str, section_title: str, topic: str) -> str:
+    """Yarım kalan bölümü kaldığı yerden tamamlar. Sıfırdan yazmaz."""
+    llm = get_model()
+    
+    # Son 800 karakteri bağlam olarak ver
+    tail = incomplete_content[-800:] if len(incomplete_content) > 800 else incomplete_content
+    safe_title = _escape_braces(section_title)
+    safe_topic = _escape_braces(topic)
+    safe_tail = _escape_braces(tail)
+    
+    system_prompt = f"""Sen uzman bir akademik yazarsın.
+    Görevin: Yarım kalmış bir akademik bölümü KALDIGI YERDEN devam ettirerek tamamlamak.
+    
+    KURALLAR:
+    1. Mevcut metni TEKRAR YAZMA. Sadece eksik olan kısmı yaz.
+    2. Mevcut metnin son cümlesini anlamlı şekilde tamamla.
+    3. Bir kapanış paragrafı ekleyerek bölümü sonlandır.
+    4. Son cümle MUTLAKA nokta (.) ile bitmeli.
+    5. Akademik dil ve LaTeX kullanımını koru.
+    6. Bölüm başlığı: {safe_title}
+    7. Araştırma konusu: {safe_topic}
+    """
+    
+    prompt = ChatPromptTemplate.from_messages([
+        ("system", system_prompt),
+        ("user", "YARIM KALAN METNİN SONU:\n...{tail_text}\n\nMetni kaldığı yerden devam ettir ve tamamla. SADECE eksik kısmı yaz:")
+    ])
+    
+    chain = prompt | llm
+    response = chain.invoke({"tail_text": tail})
+    
+    completion = response.content if hasattr(response, 'content') else str(response)
+    combined = incomplete_content.rstrip() + " " + completion.strip()
+    return combined
 
 # --- ANA DÜĞÜM ---
 
@@ -101,30 +120,71 @@ def analyst_node(state: ResearchState):
     
     outline = state.get("report_outline", [])
     current_index = state.get("current_section_index", 0)
-    
-    # Reviewer'dan geri döndüyse — state'i sıfırla ve yeniden yaz
     feedback = state.get("feedback", "")
     review_count = state.get("review_count", 0)
+    failed_titles = state.get("failed_section_titles", [])
     
+    # Reviewer'dan geri döndüyse — SADECE sorunlu bölümleri temizle
     if feedback and outline and current_index >= len(outline):
-        print(f"🔄 Reviewer'dan geri dönüldü (Deneme {review_count + 1}/3). Bölümler yeniden yazılacak.")
+        written = state.get("written_sections", {}).copy()
+        removed = []
+        
+        # 1. Reviewer'ın belirttiği bölümleri temizle (fuzzy match)
+        for failed in failed_titles:
+            for otitle in outline:
+                if _fuzzy_match(failed, otitle) and otitle in written:
+                    del written[otitle]
+                    removed.append(otitle)
+                    break
+        
+        # 2. Otomatik: Yarım kalan bölümleri de temizle
+        for title in outline:
+            if title in written and not _is_section_complete(written[title]):
+                del written[title]
+                if title not in removed:
+                    removed.append(title)
+        
+        if removed:
+            print(f"🔄 Reviewer'dan geri dönüldü (Deneme {review_count + 1}/3). {len(removed)} bölüm yeniden yazılacak:")
+            for r in removed:
+                print(f"   - {r[:50]}")
+        else:
+            print(f"🔄 Reviewer'dan geri dönüldü (Deneme {review_count + 1}/3). Kaynak düzeltmesi yapılacak.")
+        
         return {
-            "written_sections": {},
+            "written_sections": written,
             "current_section_index": 0,
             "is_complete": False,
-            "feedback": "",  # Feedback'i temizle
-            "review_count": review_count + 1
+            "feedback": feedback,
+            "review_count": review_count + 1,
+            "failed_section_titles": []
         }
     
-    # 1. ADIM: MİMAR (Outline Yoksa)
+    # 1. ADIM: MİMAR
     if not outline:
         return run_architect_mode(state)
     
-    # 2. ADIM: YAZAR (Daha yazılacak bölüm varsa)
+    # 2. ADIM: YAZAR
     elif current_index < len(outline):
+        target_title = outline[current_index]
+        written = state.get("written_sections", {})
+        
+        # Bu bölüm zaten yazılmış ve tamamsa → ATLA
+        if target_title in written and _is_section_complete(written[target_title]):
+            print(f"⏭️ Bölüm {current_index+1}/{len(outline)} zaten tamamlanmış, atlanıyor: '{target_title[:40]}...'")
+            return {
+                "current_section_index": current_index + 1,
+                "is_complete": False
+            }
+        
+        # Yarım kalmış bölüm varsa → TAMAMLAMA MODU
+        if target_title in written and not _is_section_complete(written[target_title]):
+            return run_completion_mode(state)
+        
+        # Yeni bölüm → YAZIM MODU
         return run_batch_writer(state)
         
-    # 3. ADIM: EDİTÖR (Tüm bölümler bitti)
+    # 3. ADIM: EDİTÖR
     else:
         return run_editor_mode(state)
 
@@ -183,21 +243,38 @@ def run_architect_mode(state: ResearchState):
         "is_complete": False
     }
 
-def _escape_braces(text):
-    """LangChain template'lerinde kullanılacak f-string değerlerindeki
-    süslü parantezleri escape eder ({X} -> {{X}}) böylece
-    ChatPromptTemplate bunları değişken olarak yorumlamaz."""
-    if isinstance(text, str):
-        return text.replace("{", "{{").replace("}", "}}")
-    elif isinstance(text, list):
-        return [_escape_braces(item) for item in text]
-    return str(text).replace("{", "{{").replace("}", "}}")
-
-def run_batch_writer(state: ResearchState):
+def run_completion_mode(state: ResearchState):
+    """Yarım kalan bölümü kaldığı yerden tamamlar — sıfırdan yazmaz."""
     outline = state.get("report_outline", [])
     current_index = state.get("current_section_index", 0)
+    target_title = outline[current_index]
+    topic = state.get("final_topic", state.get("user_topic"))
+    existing_content = state.get("written_sections", {}).get(target_title, "")
     
-    # Tek bölüm yaz — kalite ve kontrol için en güvenli yöntem
+    print(f"🔧 Mod: TAMAMLAYICI (Bölüm {current_index+1}/{len(outline)}: '{target_title[:40]}...')")
+    
+    completed = _complete_incomplete_section(existing_content, target_title, topic)
+    
+    if not _is_section_complete(completed):
+        print(f"   ⚠️ İlk tamamlama yetmedi, bir deneme daha...")
+        completed = _complete_incomplete_section(completed, target_title, topic)
+    
+    new_written = state.get("written_sections", {}).copy()
+    new_written[target_title] = completed
+    
+    status = "✅ tamamlandı" if _is_section_complete(completed) else "⚠️ hala eksik, devam ediliyor"
+    print(f"   -> Bölüm {status}: {target_title[:40]}...")
+    
+    return {
+        "written_sections": new_written,
+        "current_section_index": current_index + 1,
+        "is_complete": False
+    }
+
+def run_batch_writer(state: ResearchState):
+    """Yeni bir bölümü sıfırdan yazar."""
+    outline = state.get("report_outline", [])
+    current_index = state.get("current_section_index", 0)
     target_title = outline[current_index]
     topic = state.get("final_topic", state.get("user_topic"))
     
@@ -209,17 +286,14 @@ def run_batch_writer(state: ResearchState):
     full_contents_text = str(state.get("full_paper_contents", {}))[:100000]
     web_text = state.get("web_data", "")[:30000]
     
-    # Süslü parantez içeren başlıkları escape et
     safe_title = _escape_braces(target_title)
     safe_topic = _escape_braces(topic)
     
-    # Daha önce yazılmış bölümlerin başlıklarını bağlam olarak ver
     written_so_far = list(state.get("written_sections", {}).keys())
     prev_context = ""
     if written_so_far:
         prev_context = f"Şimdiye kadar yazılan bölümler: {_escape_braces(str(written_so_far))}. Tekrar yazmaya gerek yok."
     
-    # Reviewer feedback'i varsa bölüm yazarına ilet
     reviewer_feedback = state.get("feedback", "")
     feedback_instruction = ""
     if reviewer_feedback:
@@ -269,36 +343,34 @@ ATIF YAPILABİLİR KAYNAKLAR — Web Siteleri:
 Lütfen '{section_title}' başlıklı bölümü yaz:""")
     ])
     
-    # Bölüm tamamlık kontrolü ile retry mekanizması
-    max_retries = 2
-    response = None
+    chain = prompt | structured_llm
+    response = chain.invoke({
+        "topic": topic,
+        "trend": state.get('trend_analysis', ''),
+        "full_text": full_contents_text,
+        "web_text": web_text,
+        "section_title": target_title
+    })
     
-    for attempt in range(max_retries + 1):
-        chain = prompt | structured_llm
-        response = chain.invoke({
-            "topic": topic,
-            "trend": state.get('trend_analysis', ''),
-            "full_text": full_contents_text,
-            "web_text": web_text,
-            "section_title": target_title
-        })
+    final_content = response.content
+    
+    # Eksikse → sıfırdan yazma, kaldığı yerden tamamla
+    if not _is_section_complete(final_content):
+        print(f"   ⚠️ Bölüm eksik tespit edildi, kaldığı yerden tamamlanıyor...")
+        final_content = _complete_incomplete_section(final_content, target_title, topic)
         
-        if _is_section_complete(response.content):
-            break
-        
-        if attempt < max_retries:
-            print(f"   ⚠️ Bölüm eksik tespit edildi (deneme {attempt + 1}/{max_retries + 1}), yeniden yazılıyor...")
+        if _is_section_complete(final_content):
+            print(f"   ✅ Bölüm tamamlama modunda bitirildi.")
         else:
-            print(f"   ⚠️ Bölüm {max_retries + 1} denemede de tamamlanamadı, mevcut haliyle kaydediliyor.")
+            print(f"   ⚠️ Bölüm tamamlanamadı, mevcut haliyle kaydediliyor.")
     
-    # Outline başlığıyla kaydet (LLM'in değiştirdiği başlığı KULLANMA)
     new_written = state.get("written_sections", {}).copy()
-    new_written[target_title] = response.content
+    new_written[target_title] = final_content
     print(f"   -> Bölüm yazıldı: {target_title[:40]}...")
     
     return {
         "written_sections": new_written,
-        "current_section_index": current_index + 1,  # Sabit artış — her zaman 1
+        "current_section_index": current_index + 1,
         "is_complete": False
     }
 
@@ -317,7 +389,6 @@ def run_editor_mode(state: ResearchState):
     for title in outline:
         content = written_sections.get(title)
         
-        # Eğer birebir başlık yoksa, benzerini ara
         if not content:
             for k, v in written_sections.items():
                 if k in title or title in k:
@@ -325,7 +396,6 @@ def run_editor_mode(state: ResearchState):
                     break
         
         if content:
-            # Bölüm tamamlık kontrolü
             if not _is_section_complete(content):
                 incomplete_sections.append(title)
                 print(f"   ⚠️ Eksik bölüm tespit edildi: {title[:40]}...")
@@ -334,20 +404,19 @@ def run_editor_mode(state: ResearchState):
             full_report += f"## {title}\n\n*(Bu bölüm oluşturulurken teknik bir aksaklık yaşandı)*\n\n"
             incomplete_sections.append(title)
 
-    # 2. KAYNAK DOĞRULAMA — metin içi atıfları kontrol et
+    # 2. KAYNAK DOĞRULAMA
     valid_citations = _build_valid_citation_set(state)
     invalid_citations = _find_invalid_citations(full_report, valid_citations)
     
     if invalid_citations:
         print(f"   ⚠️ Kaynakçada bulunmayan {len(invalid_citations)} atıf tespit edildi: {invalid_citations[:5]}")
-    
     if incomplete_sections:
         print(f"   ⚠️ {len(incomplete_sections)} eksik bölüm tespit edildi: {[t[:30] for t in incomplete_sections]}")
 
-    # 3. REFERANSLAR BÖLÜMÜ (Akademik + Web kaynakları)
+    # 3. REFERANSLAR — sadece metin içinde atıf yapılanları dahil et
     full_report += "## REFERANSLAR\n\n"
     
-    # 3a. Akademik Kaynaklar (ArXiv) — sadece metin içinde atıf yapılanları dahil et
+    # 3a. Akademik Kaynaklar
     full_report += "### Akademik Kaynaklar\n"
     seen_refs = set()
     selected_ids = state.get("selected_paper_ids", [])
@@ -356,16 +425,14 @@ def run_editor_mode(state: ResearchState):
         if s['entry_id'] in selected_ids and s['title'] not in seen_refs:
             authors = s.get('authors', ['Bilinmeyen Yazar'])
             first_author = authors[0] if authors else 'Bilinmeyen Yazar'
-            first_author_surname = first_author.split()[-1] if first_author else ''
+            surname = first_author.split()[-1] if first_author else ''
             published = s.get('published', 'Tarih Bilinmiyor')
             entry_id = s.get('entry_id', '')
             
-            # Sadece rapor metninde gerçekten atıf yapılan kaynakları dahil et
-            if first_author_surname and first_author_surname in full_report:
+            if surname and surname in full_report:
                 full_report += f"- {first_author} et al. ({published[:4]}). **{s['title']}**. arXiv: {entry_id}\n"
                 seen_refs.add(s['title'])
     
-    # Eğer hiç eşleşme olmadıysa tüm seçilenleri ekle (güvenlik önlemi)
     if not seen_refs:
         for s in state.get("arxiv_summaries", []):
             if s['entry_id'] in selected_ids and s['title'] not in seen_refs:
@@ -379,7 +446,7 @@ def run_editor_mode(state: ResearchState):
     if not seen_refs:
         full_report += "- *Akademik kaynak bulunamadı.*\n"
     
-    # 3b. Web Kaynakları (Tavily) — sadece rapor metninde atıf yapılanları dahil et
+    # 3b. Web Kaynakları — sadece raporda atıf yapılanlar
     full_report += "\n### Web Kaynakları\n"
     web_sources = state.get("web_sources", [])
     seen_web = set()
@@ -388,7 +455,6 @@ def run_editor_mode(state: ResearchState):
         url = src.get("url", "")
         title = src.get("title", "Başlıksız")
         if url and url not in seen_web:
-            # Web kaynağının adının veya URL'inin raporda geçip geçmediğini kontrol et
             title_words = [w for w in title.split() if len(w) >= 3 and w[0].isupper()]
             is_cited = any(word in full_report for word in title_words) if title_words else True
             
@@ -396,7 +462,6 @@ def run_editor_mode(state: ResearchState):
                 full_report += f"- {title}. Erişim: {url}\n"
                 seen_web.add(url)
     
-    # Eğer hiç eşleşme olmadıysa tüm web kaynaklarını ekle (güvenlik önlemi)
     if not seen_web:
         for src in web_sources:
             url = src.get("url", "")
@@ -412,5 +477,5 @@ def run_editor_mode(state: ResearchState):
     
     return {
         "final_report": full_report,
-        "is_complete": True # Graph Reviewer'a geçecek
+        "is_complete": True
     }
