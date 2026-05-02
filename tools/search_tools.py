@@ -20,7 +20,7 @@ def search_arxiv(query: str, max_results: int = 100) -> List[Dict]:
     # Daha muhafazakar bir client yapılandırması
     client = Client(
         page_size=min(max_results, 50), # Sayfa boyutunu küçülterek yükü azaltalım
-        delay_seconds=3.0, 
+        delay_seconds=5.0, # ArXiv API'sine fazla yüklenmemek için bekleme süresi artırıldı
         num_retries=3
     )
     
@@ -49,7 +49,7 @@ def search_arxiv(query: str, max_results: int = 100) -> List[Dict]:
         except Exception as e:
             error_str = str(e).lower()
             if "429" in error_str:
-                wait_time = (attempt + 1) * 20 # Bekleme süresini biraz daha optimize edelim
+                wait_time = (attempt + 1) * 30 # Bekleme süresi artırıldı (30, 60, 90 saniye)
                 print(f"⚠️ ArXiv Rate Limit (429) yakalandı. {wait_time} saniye bekleniyor... (Deneme {attempt+1}/{max_manual_retries})")
                 time.sleep(wait_time)
             elif "connection" in error_str or "10054" in error_str:

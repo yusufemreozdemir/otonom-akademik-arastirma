@@ -45,7 +45,8 @@ def researcher_node(state: ResearchState):
         all_web_sources.extend(web_sources)
 
         # Bir sonraki sorgu öncesi bekleme (Rate limit koruması)
-        sleep_time = random.randint(3, 7) if arxiv_consecutive_fails >= 2 else random.randint(8, 15)
+        # Eğer çok hata aldıysak uzun bekle, yoksa normal bekle
+        sleep_time = random.randint(20, 30) if arxiv_consecutive_fails >= 2 else random.randint(10, 20)
         time.sleep(sleep_time)
 
     # Tavily çıktılarını kaydet
