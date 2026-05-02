@@ -106,8 +106,8 @@ def _complete_incomplete_section(incomplete_content: str, section_title: str, to
         ("user", "YARIM KALAN METNİN SONU:\n...{tail_text}\n\nMetni kaldığı yerden devam ettir ve tamamla. SADECE eksik kısmı yaz:")
     ])
     
-    chain = prompt | llm
-    response = chain.invoke({"tail_text": tail})
+    messages = prompt.format_messages(tail_text=tail)
+    response = llm.invoke(messages)
     
     completion = response.content if hasattr(response, 'content') else str(response)
     combined = incomplete_content.rstrip() + " " + completion.strip()
