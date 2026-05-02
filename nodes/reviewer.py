@@ -35,10 +35,9 @@ def reviewer_node(state: ResearchState):
         DEĞERLENDİRME KRİTERLERİ:
 
         1. KAYNAK BÜTÜNLÜĞÜ (En Kritik Kriter): 
-           - Raporda metin içinde atıf yapılan HER kaynak (akademik makale, web sitesi) REFERANSLAR bölümünde listelenmeli.
-           - 'Analiz', 'Analizler', 'Kaynak' gibi belirsiz atıflar var mı? Bunlar geçersiz atıflardır.
-           - Kaynakçada olmayan bir makale/siteye atıf yapılmış mı? 
-           - Uydurma bilgi veya halüsinasyon var mı?
+           - Raporda metin içinde atıf yapılan HER kaynak REFERANSLAR bölümünde OLMALIDIR. (Kaynakçada olmayan uydurma atıflar YASAKTIR).
+           - ANCAK, Referanslar listesindeki her kaynağın metinde geçmesi ZORUNLU DEĞİLDİR (Bunlar 'İncelenen Eserler' kabul edilir). Bu yüzden "Kullanılmayan Kaynaklar" var diyerek SAKIN PUAN KIRMA.
+           - Metin içinde kaynakçada olmayan uydurma yazarlara (halüsinasyon) atıf yapılmışsa puan kır ve o bölümü yeniden yazılması için işaretle.
         
         2. KONU UYUMU: Rapor, araştırma konusuna odaklı mı? Konu dağılmış mı yoksa tutarlı mı?
         
@@ -65,9 +64,8 @@ def reviewer_node(state: ResearchState):
         SORUNLU BÖLÜMLER:
         - failed_sections listesine SADECE yeniden yazılması gereken bölümlerin BAŞLIKLARINI ekle.
         - Başlıkları rapordaki ## işaretinden sonraki haliyle AYNEN yaz.
-        - Sorun sadece kaynak bütünlüğüyse (atıf eksikliği), bölümü failed_sections'a EKLEME — 
-          bu tür sorunlar editör tarafından otomatik düzeltilir.
-        - Sadece İÇERİK EKSİKLİĞİ olan (cümle ortasında kesilmiş, yarım kalmış) bölümleri ekle.
+        - ÖNEMLİ: Eğer bir bölümde yanlış atıf, halüsinasyon veya eksik kaynak sorunu varsa O BÖLÜMÜ de listeye ekle.
+        - Sadece İÇERİK EKSİKLİĞİ (yarım kalma) DEĞİL, KAYNAKÇA HATALARI olan bölümleri de failed_sections'a dahil et.
     """
     
     prompt = ChatPromptTemplate.from_messages([

@@ -107,7 +107,7 @@ class RobustGeminiModel:
     """
     LangChain model arayüzünü taklit eden, kendi içinde retry ve rotasyon mekanizması olan sarmalayıcı (wrapper).
     """
-    def __init__(self, model_name="models/gemini-2.5-flash", temperature=0):
+    def __init__(self, model_name="models/gemini-3-flash-preview", temperature=0):
         self.model_name = model_name
         self.temperature = temperature
 
@@ -147,10 +147,10 @@ class RobustGeminiModel:
                     time.sleep(1)
                     continue
 
-                # Diğer sunucu hataları (503/500)
-                if "503" in error_msg or "UNAVAILABLE" in error_msg or "500" in error_msg:
+                # Diğer sunucu hataları (503/500/Disconnect)
+                if any(x in error_msg for x in ["503", "UNAVAILABLE", "500", "INTERNAL", "DISCONNECTED", "REMOTE ERROR", "CONNECTION"]):
                     wait_time = 5 * (attempt + 1)
-                    print(f"⚠️ Google Sunucu Hatası ({error_msg[:20]}). {wait_time} sn bekleniyor...")
+                    print(f"⚠️ Google Sunucu Hatası ({error_msg[:30]}). {wait_time} sn bekleniyor...")
                     time.sleep(wait_time)
                     continue
 
@@ -191,9 +191,9 @@ class RobustGeminiModel:
                         time.sleep(1)
                         continue
 
-                    if "503" in error_msg or "UNAVAILABLE" in error_msg or "500" in error_msg:
+                    if any(x in error_msg for x in ["503", "UNAVAILABLE", "500", "INTERNAL", "DISCONNECTED", "REMOTE ERROR", "CONNECTION"]):
                         wait_time = 5 * (attempt + 1)
-                        print(f"⚠️ (Structured) Sunucu hatası ({error_msg[:20]}), {wait_time} sn bekleniyor...")
+                        print(f"⚠️ (Structured) Sunucu hatası ({error_msg[:30]}), {wait_time} sn bekleniyor...")
                         time.sleep(wait_time)
                         continue
                     
@@ -207,4 +207,4 @@ class RobustGeminiModel:
 def get_model():
     # Artık standart ChatGoogleGenerativeAI yerine bizim "Sağlam" sınıfımızı döndürüyoruz.
     # Bu sınıf 429 yerse kendi içinde key değiştirip devam edecek.
-    return RobustGeminiModel(model_name="models/gemini-2.5-flash", temperature=0)
+    return RobustGeminiModel(model_name="models/gemini-3-flash-preview", temperature=0)
