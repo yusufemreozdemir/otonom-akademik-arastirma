@@ -3,7 +3,7 @@ import json
 from langchain_core.messages import SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
-from tools.parsing_tools import process_paper, PDF_THREAD_COUNT
+from tools.parsing_tools import process_paper
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from state import ResearchState
@@ -96,9 +96,9 @@ KARAR VERME:
         content = process_paper(pdf_url)
         return paper_id, content
     
-    print(f"⚡ {len(pdf_tasks)} makale {PDF_THREAD_COUNT} paralel thread ile ayrıştırılıyor...")
+    print(f"⚡ {len(pdf_tasks)} makale 4 paralel thread ile ayrıştırılıyor (LlamaParse Bulut)...")
     
-    with ThreadPoolExecutor(max_workers=PDF_THREAD_COUNT) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {
             executor.submit(_process_single_paper, pid, url): pid
             for pid, url in pdf_tasks
