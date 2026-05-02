@@ -356,8 +356,8 @@ def run_batch_writer(state: ResearchState):
     2. ÇIKTI FORMATI: TEK bir SectionOutput objesi döndür. title ve content alanlarını doldur.
     3. BAŞLIK: title alanına '{target_title}' yaz (DEĞİŞTİRME).
     4. KAYNAK SADAKATİ: Sadece sana verilen Akademik Makaleler (PDF) VE Web Kaynaklarını kullan.
-    5. LATEX KULLANIMI: Teknik terimler ve formüller için LaTeX kullan.
-    6. KESİN ATIF KURALI: YALNIZCA aşağıda listelenen "İZİN VERİLEN ATIF FORMATLARI"nı kullanabilirsin. PDF içindeki metinlerde geçen ancak bu listede olmayan BŞKA YAZARLARA veya kaynaklara (örn. Kaplan, Chen vb.) KESİNLİKLE ATIF YAPMA. Halüsinasyon atıf uydurma.
+    5. LATEX KULLANIMI: Formüller için LaTeX kullan. Firma/Model isimleri (Örn: GPT-4, Anthropic) için LaTeX KULLANMA, normal metin yaz. ÇOK ÖNEMLİ: Çıktın JSON olacağı için LaTeX yazarken ters bölü (\) işaretini ÇİFT kullan! (Örn: \text yerine \\text yazmalısın. Aksi halde \t tab olarak algılanır ve kelimeler bozulur).
+    6. KESİN ATIF KURALI: YALNIZCA aşağıda listelenen "İZİN VERİLEN ATIF FORMATLARI"nı kullanabilirsin. PDF içindeki metinlerde geçen ancak bu listede olmayan BAŞKA YAZARLARA veya kaynaklara (örn. Kaplan, Chen vb.) KESİNLİKLE ATIF YAPMA. Halüsinasyon atıf uydurma.
     7. BÖLÜM UZUNLUĞU: En az 400 kelime, akademik ve detaylı.
     8. BÖLÜM BÜTÜNLÜĞÜ: Bölümü MUTLAKA tamamla. Cümle ortasında bırakma. SON CÜMLE MUTLAKA NOKTAYLA BİTMELİ.
     9. YASAK ATIFLAR: 'Analiz', 'Analizler', 'Araştırma', 'Kaynak', 'Değerlendirme', 'İnceleme', 'Tavily AI Summary' kelimeleri ASLA atıf olarak kullanılamaz.
@@ -426,6 +426,11 @@ def run_editor_mode(state: ResearchState):
                     break
         
         if content:
+            # LaTeX JSON kaçış hatalarını düzelt (\text -> <tab>ext sorununu çözer)
+            content = content.replace("\text{", "\\text{")
+            content = content.replace("$\t", "$\\t")
+            content = content.replace("$ ext{", "$\\text{")
+            
             if not _is_section_complete(content):
                 incomplete_sections.append(title)
                 print(f"   ⚠️ Eksik bölüm tespit edildi: {title[:40]}...")
