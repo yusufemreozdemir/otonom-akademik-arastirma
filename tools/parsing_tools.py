@@ -3,12 +3,17 @@ import requests
 import tempfile
 import fitz  
 import time
+import gc
+import threading
+import torch
 from llama_parse import LlamaParse
+from markdownify import markdownify as md
 
-# LlamaParse bulut tabanlı çalıştığı için VRAM/GPU yönetimi gereksiz.
-# Paralel worker sayısı — LlamaParse kendi bulut sunucularında çalıştığı için
-# yerel kaynak kısıtlaması yok, 4 worker güvenli bir değer.
+# LlamaParse için worker sayısı
 LLAMA_PARSE_WORKERS = 4
+
+# Docling için VRAM temizleme kilidi
+_vram_lock = threading.Lock()
 
 def download_pdf(pdf_url: str) -> str:
     """
@@ -42,12 +47,12 @@ def download_pdf(pdf_url: str) -> str:
                 return None
     return None
 
-def fallback_pdf_to_markdown(file_path: str) -> str:
+def fallback_pdf_to_markdown_pymupdf(file_path: str) -> str:
     """
-    LlamaParse başarısız olursa veya API Key yoksa kullanılacak yedek yöntem (PyMuPDF).
-    Tabloları ve görselleri mükemmel alamaz ama metni kurtarır.
+    Hem LlamaParse hem de Docling başarısız olursa kullanılacak son çare yöntem (PyMuPDF).
+    Tabloları ve görselleri mükemmel alamaz ama düz metni kurtarır.
     """
-    print(f"⚠️ PyMuPDF (Yedek) devreye giriyor...")
+    print(f"⚠️ PyMuPDF (Son Çare) devreye giriyor...")
     try:
         doc = fitz.open(file_path)
         text = ""
@@ -58,17 +63,61 @@ def fallback_pdf_to_markdown(file_path: str) -> str:
     except Exception as e:
         return f"HATA: Yedek yöntem de başarısız oldu. {e}"
 
+def fallback_pdf_to_markdown_docling(file_path: str) -> str:
+    """
+    LlamaParse başarısız olursa veya API Key yoksa kullanılacak 1. Yedek yöntem (Docling).
+    """
+    print(f"Docling (1. Yedek Yöntem) ile işleniyor: {file_path}")
+    
+    try:
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+        from docling.datamodel.pipeline_options import PdfPipelineOptions, AcceleratorOptions
+        from docling.datamodel.base_models import InputFormat
+        
+        pipeline_options = PdfPipelineOptions()
+        # CUDA destekleniyorsa kullan, yoksa otomatik ayarla
+        if torch.cuda.is_available():
+            pipeline_options.accelerator_options = AcceleratorOptions(device="cuda")
+        else:
+            pipeline_options.accelerator_options = AcceleratorOptions(device="cpu")
+        pipeline_options.do_ocr = True 
+        
+        converter = DocumentConverter(
+            format_options={
+                InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+            }
+        )
+        
+        result = converter.convert(file_path)
+        markdown_text = result.document.export_to_markdown()
+        
+        # Olası memory leakleri önlemek için temizlik
+        with _vram_lock:
+            del result
+            del converter
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+            gc.collect()
+            
+        print("✅ Docling başarıyla dönüştürdü.")
+        return markdown_text
+        
+    except Exception as e:
+        print(f"❌ Docling Hatası: {e}")
+        return fallback_pdf_to_markdown_pymupdf(file_path)
+
 def parse_pdf_to_markdown(file_path: str) -> str:
     """
-    Bulutta çalışan LlamaParse ile PDF'i Markdown'a çevirir.
-    Başarısız olursa PyMuPDF'e düşer.
-    Gerekli env: LLAMA_CLOUD_API_KEY
+    1. Bulutta çalışan LlamaParse'ı dener.
+    2. Başarısız olursa yerel GPU tabanlı Docling'i dener.
+    3. O da başarısız olursa CPU tabanlı PyMuPDF'e düşer.
     """
     api_key = os.environ.get("LLAMA_CLOUD_API_KEY")
     
     if not api_key:
-        print("⚠️ LLAMA_CLOUD_API_KEY bulunamadı! Yedek yönteme (PyMuPDF) geçiliyor.")
-        return fallback_pdf_to_markdown(file_path)
+        print("⚠️ LLAMA_CLOUD_API_KEY bulunamadı! Docling yedek yöntemine geçiliyor.")
+        return fallback_pdf_to_markdown_docling(file_path)
 
     print(f"☁️ LlamaParse (Bulut) ile işleniyor: {file_path}")
     
@@ -78,14 +127,14 @@ def parse_pdf_to_markdown(file_path: str) -> str:
             result_type="markdown",
             num_workers=LLAMA_PARSE_WORKERS,
             verbose=False,
-            language="en"  # Akademik makaleler İngilizce
+            language="en"
         )
         
         documents = parser.load_data(file_path)
         
         if not documents:
-            print("⚠️ LlamaParse boş sonuç döndürdü, yedek yönteme geçiliyor.")
-            return fallback_pdf_to_markdown(file_path)
+            print("⚠️ LlamaParse boş sonuç döndürdü, Docling yöntemine geçiliyor.")
+            return fallback_pdf_to_markdown_docling(file_path)
         
         # Tüm sayfaları birleştir
         markdown_text = "\n\n".join([doc.text for doc in documents])
@@ -94,8 +143,8 @@ def parse_pdf_to_markdown(file_path: str) -> str:
         return markdown_text
     
     except Exception as e:
-        print(f"❌ LlamaParse Hatası: {e}")
-        return fallback_pdf_to_markdown(file_path)
+        print(f"❌ LlamaParse Hatası: {e}. Docling yöntemine geçiliyor.")
+        return fallback_pdf_to_markdown_docling(file_path)
 
 def process_paper(pdf_url: str) -> str:
     """Makaleyi indir, parse et ve içeriği döndür."""
