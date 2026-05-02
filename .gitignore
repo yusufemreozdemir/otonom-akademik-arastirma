@@ -1,0 +1,15 @@
+# Project specific exclusions
+reports/
+tavily_outputs/
+test_scripts/
+
+# Python common exclusions
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# OS specific
+.DS_Store
+Thumbs.db
