@@ -85,18 +85,18 @@ KARAR VERME:
         else:
             pdf_tasks.append((paper_id, None))
     
-    # --- PARALEL PDF AYRIŞTIRMA (3 Thread) ---
+    # --- PARALEL PDF İNDİRME ---
     full_contents = {}
     
     def _process_single_paper(paper_id, pdf_url):
-        """Tek bir makaleyi indirip ayrıştırır."""
+        """Tek bir makaleyi indirir ve dosya yolunu döndürür."""
         if not pdf_url:
-            return paper_id, "PDF Linki Bulunamadı."
-        print(f"🔍 [{paper_id[:15]}...] PDF ayrıştırılıyor...")
-        content = process_paper(pdf_url)
-        return paper_id, content
+            return paper_id, None
+        print(f"📥 [{paper_id[:15]}...] PDF indiriliyor...")
+        pdf_path = process_paper(pdf_url, paper_id=paper_id)
+        return paper_id, pdf_path
     
-    print(f"⚡ {len(pdf_tasks)} makale 4 paralel thread ile ayrıştırılıyor (LlamaParse Bulut)...")
+    print(f"⚡ {len(pdf_tasks)} makale 4 paralel thread ile indiriliyor...")
     
     with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {
@@ -106,18 +106,20 @@ KARAR VERME:
         
         for future in as_completed(futures):
             try:
-                paper_id, content = future.result()
-                full_contents[paper_id] = content
-                print(f"   ✅ [{paper_id[:15]}...] tamamlandı.")
+                paper_id, pdf_path = future.result()
+                if pdf_path:
+                    full_contents[paper_id] = pdf_path
+                    print(f"   ✅ [{paper_id[:15]}...] indirildi.")
+                else:
+                    print(f"   ❌ [{paper_id[:15]}...] indirilemedi.")
             except Exception as e:
                 paper_id = futures[future]
-                full_contents[paper_id] = f"HATA: {e}"
                 print(f"   ❌ [{paper_id[:15]}...] başarısız: {e}")
     
-    print(f"📄 Toplam {len(full_contents)} makale ayrıştırıldı.")
+    print(f"📄 Toplam {len(full_contents)} makale indirildi.")
 
     return {
         "selected_paper_ids": evaluation.selected_ids,
-        "full_paper_contents": full_contents, # {Paper_id: Markdown text} formatında
+        "full_paper_contents": full_contents, # {paper_id: pdf_dosya_yolu} formatında
         "filterer_feedback": None 
     }

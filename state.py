@@ -20,7 +20,7 @@ class ResearchState(TypedDict):
     
     # İşlenmiş veriler (Filterer node çıktıları)
     selected_paper_ids: List[str] # Seçilen 15 makalenin listesi
-    full_paper_contents: Dict[str, str] # Markdowna çevrilmiş makalelerin tam metni (paper_id: markdown text)
+    full_paper_contents: Dict[str, str] # PDF dosya yolları (paper_id: pdf_file_path) — doğrudan modele verilir
     paper_images: Dict[str, List[str]] # Makalelerden ayıklanan görsellerin yolları
     is_complete: bool # Araştırma sürecinin bitip bitmediğini kontrol eden bayrak
     revision_number: int # Kaçıncı araştırma denemesi? (Max 3)

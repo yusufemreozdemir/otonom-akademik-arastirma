@@ -1,7 +1,9 @@
 import json
 import re
-import math
+import os
+import base64
 from typing import List
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
@@ -36,13 +38,6 @@ def _is_section_complete(content: str) -> bool:
         return True
     return False
 
-def _escape_braces(text):
-    if isinstance(text, str):
-        return text.replace("{", "{{").replace("}", "}}")
-    elif isinstance(text, list):
-        return [_escape_braces(item) for item in text]
-    return str(text).replace("{", "{{").replace("}", "}}")
-
 def _fuzzy_match(title_a: str, title_b: str) -> bool:
     """İki bölüm başlığının benzer olup olmadığını kontrol eder."""
     a = title_a.lower().strip()[:40]
@@ -76,19 +71,52 @@ def _find_invalid_citations(report_text: str, valid_set: set) -> List[str]:
             invalid.append(cite.strip())
     return list(set(invalid))
 
+# --- PDF MULTIMODAL YARDIMCILARI ---
+
+def _load_pdf_parts(state: ResearchState) -> list:
+    """PDF dosyalarını Gemini multimodal mesaj parçalarına dönüştürür."""
+    parts = []
+    full_contents = state.get("full_paper_contents", {})
+    summaries = state.get("arxiv_summaries", [])
+    
+    # paper_id → title eşlemesi
+    title_map = {}
+    for s in summaries:
+        title_map[s.get("entry_id", "")] = s.get("title", "Başlıksız")
+    
+    loaded_count = 0
+    for paper_id, pdf_path in full_contents.items():
+        if not pdf_path or not os.path.exists(pdf_path):
+            continue
+        
+        title = title_map.get(paper_id, paper_id)
+        
+        try:
+            with open(pdf_path, "rb") as f:
+                pdf_data = base64.standard_b64encode(f.read()).decode("utf-8")
+            
+            parts.append({"type": "text", "text": f"\n--- Makale: {title} (ID: {paper_id}) ---"})
+            parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:application/pdf;base64,{pdf_data}"}
+            })
+            loaded_count += 1
+        except Exception as e:
+            print(f"   ⚠️ PDF yüklenemedi ({paper_id[:15]}): {e}")
+    
+    print(f"   📎 {loaded_count} PDF doğrudan modele veriliyor.")
+    return parts
+
 # --- BÖLÜM TAMAMLAMA (KALDIĞI YERDEN DEVAM) ---
 
 def _complete_incomplete_section(incomplete_content: str, section_title: str, topic: str) -> str:
     """Yarım kalan bölümü kaldığı yerden tamamlar. Sıfırdan yazmaz."""
     llm = get_model()
     
-    # Son 800 karakteri bağlam olarak ver
     tail = incomplete_content[-800:] if len(incomplete_content) > 800 else incomplete_content
-    safe_title = _escape_braces(section_title)
-    safe_topic = _escape_braces(topic)
-    safe_tail = _escape_braces(tail)
     
-    system_prompt = f"""Sen uzman bir akademik yazarsın.
+    messages = [
+        SystemMessage(content=f"""Sen uzman bir akademik yazarsın.
     Görevin: Yarım kalmış bir akademik bölümü KALDIGI YERDEN devam ettirerek tamamlamak.
     
     KURALLAR:
@@ -97,18 +125,12 @@ def _complete_incomplete_section(incomplete_content: str, section_title: str, to
     3. Bir kapanış paragrafı ekleyerek bölümü sonlandır.
     4. Son cümle MUTLAKA nokta (.) ile bitmeli.
     5. Akademik dil ve LaTeX kullanımını koru.
-    6. Bölüm başlığı: {safe_title}
-    7. Araştırma konusu: {safe_topic}
-    """
+    6. Bölüm başlığı: {section_title}
+    7. Araştırma konusu: {topic}"""),
+        HumanMessage(content=f"YARIM KALAN METNİN SONU:\n...{tail}\n\nMetni kaldığı yerden devam ettir ve tamamla. SADECE eksik kısmı yaz:")
+    ]
     
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
-        ("user", "YARIM KALAN METNİN SONU:\n...{tail_text}\n\nMetni kaldığı yerden devam ettir ve tamamla. SADECE eksik kısmı yaz:")
-    ])
-    
-    messages = prompt.format_messages(tail_text=tail)
     response = llm.invoke(messages)
-    
     completion = response.content if hasattr(response, 'content') else str(response)
     combined = incomplete_content.rstrip() + " " + completion.strip()
     return combined
@@ -129,7 +151,6 @@ def analyst_node(state: ResearchState):
         written = state.get("written_sections", {}).copy()
         removed = []
         
-        # 1. Reviewer'ın belirttiği bölümleri temizle (fuzzy match)
         for failed in failed_titles:
             for otitle in outline:
                 if _fuzzy_match(failed, otitle) and otitle in written:
@@ -137,7 +158,6 @@ def analyst_node(state: ResearchState):
                     removed.append(otitle)
                     break
         
-        # 2. Otomatik: Yarım kalan bölümleri de temizle
         for title in outline:
             if title in written and not _is_section_complete(written[title]):
                 del written[title]
@@ -160,16 +180,12 @@ def analyst_node(state: ResearchState):
             "failed_section_titles": []
         }
     
-    # 1. ADIM: MİMAR
     if not outline:
         return run_architect_mode(state)
-    
-    # 2. ADIM: YAZAR
     elif current_index < len(outline):
         target_title = outline[current_index]
         written = state.get("written_sections", {})
         
-        # Bu bölüm zaten yazılmış ve tamamsa → ATLA
         if target_title in written and _is_section_complete(written[target_title]):
             print(f"⏭️ Bölüm {current_index+1}/{len(outline)} zaten tamamlanmış, atlanıyor: '{target_title[:40]}...'")
             return {
@@ -177,14 +193,10 @@ def analyst_node(state: ResearchState):
                 "is_complete": False
             }
         
-        # Yarım kalmış bölüm varsa → TAMAMLAMA MODU
         if target_title in written and not _is_section_complete(written[target_title]):
             return run_completion_mode(state)
         
-        # Yeni bölüm → YAZIM MODU
         return run_batch_writer(state)
-        
-    # 3. ADIM: EDİTÖR
     else:
         return run_editor_mode(state)
 
@@ -198,17 +210,16 @@ def run_architect_mode(state: ResearchState):
     
     topic = state.get("final_topic", state.get("user_topic"))
     summaries = state.get("arxiv_summaries", [])
-    full_contents = state.get("full_paper_contents", {})
     web_data = state.get("web_data", "")
     
     summary_text = "\n".join([f"- {s['title']}: {s['summary'][:300]}" for s in summaries])
-    full_text = "\n\n".join([f"--- PAPER ID: {pid} ---\n{str(content)[:25000]}" for pid, content in full_contents.items()])
+    pdf_parts = _load_pdf_parts(state)
     
     system_prompt = f"""Sen deneyimli bir akademik araştırmacısın.
     Görevin: Verilen kaynakları analiz ederek kapsamlı bir akademik araştırma raporu planı oluşturmak.
     
     KURALLAR:
-    1. KONU ODAKLI OL: Sadece '{_escape_braces(topic)}' konusuna odaklan. 
+    1. KONU ODAKLI OL: Sadece '{topic}' konusuna odaklan. 
     2. AKADEMİK DİL: Ciddi, teknik ve nesnel bir dil kullan.
     3. LATEX KULLANIMI: Tüm teknik terimler ve formüller için LaTeX kullan.
     4. KAYNAK TABANLI: Analizini sadece sana verilen kaynaklara dayandır.
@@ -218,18 +229,19 @@ def run_architect_mode(state: ResearchState):
     ADIM C — RAPOR İSKELETİ: Mantıksal bir sırayla 6-10 bölüm başlığı oluştur.
     """
     
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
-        ("user", "Konu: {topic}\n\nWeb Verisi: {web_data}\n\nÖzetler:\n{summary_text}\n\nTam Metinler:\n{full_text}")
-    ])
+    # Multimodal mesaj: metin + PDF dosyaları
+    user_content = [
+        {"type": "text", "text": f"Konu: {topic}\n\nWeb Verisi: {web_data[:30000]}\n\nÖzetler:\n{summary_text}\n\n--- AKADEMİK MAKALELER (PDF) ---"},
+        *pdf_parts,
+        {"type": "text", "text": "\n\nYukarıdaki kaynakları analiz et ve rapor planı oluştur."}
+    ]
     
-    chain = prompt | structured_llm
-    response = chain.invoke({
-        "topic": topic,
-        "web_data": web_data,
-        "summary_text": summary_text,
-        "full_text": full_text
-    })
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_content)
+    ]
+    
+    response = structured_llm.invoke(messages)
     
     print(f"✅ Planlama Tamamlandı: '{response.report_title}' — {len(response.report_outline)} bölüm belirlendi.")
     
@@ -272,7 +284,7 @@ def run_completion_mode(state: ResearchState):
     }
 
 def run_batch_writer(state: ResearchState):
-    """Yeni bir bölümü sıfırdan yazar."""
+    """Yeni bir bölümü sıfırdan yazar — PDF'leri doğrudan modele vererek."""
     outline = state.get("report_outline", [])
     current_index = state.get("current_section_index", 0)
     target_title = outline[current_index]
@@ -283,78 +295,62 @@ def run_batch_writer(state: ResearchState):
     llm = get_model()
     structured_llm = llm.with_structured_output(SectionOutput)
     
-    full_contents_text = str(state.get("full_paper_contents", {}))[:100000]
     web_text = state.get("web_data", "")[:30000]
-    
-    safe_title = _escape_braces(target_title)
-    safe_topic = _escape_braces(topic)
+    pdf_parts = _load_pdf_parts(state)
     
     written_so_far = list(state.get("written_sections", {}).keys())
     prev_context = ""
     if written_so_far:
-        prev_context = f"Şimdiye kadar yazılan bölümler: {_escape_braces(str(written_so_far))}. Tekrar yazmaya gerek yok."
+        prev_context = f"\nŞimdiye kadar yazılan bölümler: {written_so_far}. Tekrar yazmaya gerek yok."
     
     reviewer_feedback = state.get("feedback", "")
     feedback_instruction = ""
     if reviewer_feedback:
-        safe_feedback = _escape_braces(reviewer_feedback)
         feedback_instruction = f"""
     
     ÖNCEKİ İNCELEME GERİ BİLDİRİMİ (Bu sorunları DÜZELT):
-    {safe_feedback}
+    {reviewer_feedback}
     """
     
     system_prompt = f"""Sen uzman bir akademik yazarsın.
     GÖREVİN: Aşağıdaki TEK bölüm başlığı için kapsamlı bir akademik bölüm yazmak.
     
-    YAZILACAK BÖLÜM: {safe_title}
+    YAZILACAK BÖLÜM: {target_title}
     
     YAZIM KURALLARI:
-    1. KONU SADAKATİ: Araştırma konusu '{safe_topic}'.
+    1. KONU SADAKATİ: Araştırma konusu '{topic}'.
     2. ÇIKTI FORMATI: TEK bir SectionOutput objesi döndür. title ve content alanlarını doldur.
-    3. BAŞLIK: title alanına '{safe_title}' yaz (DEĞİŞTİRME).
-    4. KAYNAK SADAKATİ: Sadece sana verilen Akademik Makaleler VE Web Kaynaklarını kullan.
+    3. BAŞLIK: title alanına '{target_title}' yaz (DEĞİŞTİRME).
+    4. KAYNAK SADAKATİ: Sadece sana verilen Akademik Makaleler (PDF) VE Web Kaynaklarını kullan.
     5. LATEX KULLANIMI: Teknik terimler ve formüller için LaTeX kullan.
-    6. HALÜSİNASYON YASAĞI: Kaynakta olmayan bilgi veya atıf EKLEME. Sana verilmeyen yazarları cite etme.
+    6. HALÜSİNASYON YASAĞI: Kaynakta olmayan bilgi veya atıf EKLEME.
     7. ATIF FORMATI:
-       - Akademik makaleler için: Yazar et al. (Yıl) — SADECE aşağıdaki Akademik Kaynaklar bölümünde bulunan yazarları kullan.
-       - Web kaynakları için: Site adı — SADECE aşağıdaki Web Kaynakları bölümünde bulunan site adlarını kullan.
+       - Akademik makaleler için: Yazar et al. (Yıl) — SADECE verilen PDF makalelerdeki yazarları kullan.
+       - Web kaynakları için: Site adı — SADECE verilen Web Kaynakları bölümündeki site adlarını kullan.
     8. BÖLÜM UZUNLUĞU: En az 400 kelime, akademik ve detaylı.
-    9. BÖLÜM BÜTÜNLÜĞÜ: Bölümü MUTLAKA tamamla. Cümle ortasında bırakma. Açılış, gelişme ve kapanış paragrafı olmalı.
+    9. BÖLÜM BÜTÜNLÜĞÜ: Bölümü MUTLAKA tamamla. Cümle ortasında bırakma.
        SON CÜMLE MUTLAKA NOKTAYLA BİTMELİ. Eksik cümle YASAK.
     10. YASAK ATIFLAR: 'Analiz', 'Analizler', 'Araştırma', 'Kaynak', 'Değerlendirme', 'İnceleme', 'Tavily AI Summary'
-        kelimeleri ASLA atıf olarak kullanılamaz. Bunlar kaynak değildir.
+        kelimeleri ASLA atıf olarak kullanılamaz.
     {prev_context}{feedback_instruction}
     """
     
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
-        ("user", """Konu: {topic}
-
-YAZIM REHBERİ (atıf kaynağı olarak KULLANMA):
-{trend}
-
-ATIF YAPILABİLİR KAYNAKLAR — Akademik Makaleler:
-{full_text}
-
-ATIF YAPILABİLİR KAYNAKLAR — Web Siteleri:
-{web_text}
-
-Lütfen '{section_title}' başlıklı bölümü yaz:""")
-    ])
+    # Multimodal mesaj: metin + PDF dosyaları
+    user_content = [
+        {"type": "text", "text": f"Konu: {topic}\n\nYAZIM REHBERİ (atıf kaynağı olarak KULLANMA):\n{state.get('trend_analysis', '')}\n\nATIF YAPILABİLİR KAYNAKLAR — Web Siteleri:\n{web_text}\n\nATIF YAPILABİLİR KAYNAKLAR — Akademik Makaleler (PDF):"},
+        *pdf_parts,
+        {"type": "text", "text": f"\n\nLütfen '{target_title}' başlıklı bölümü yaz:"}
+    ]
     
-    chain = prompt | structured_llm
-    response = chain.invoke({
-        "topic": topic,
-        "trend": state.get('trend_analysis', ''),
-        "full_text": full_contents_text,
-        "web_text": web_text,
-        "section_title": target_title
-    })
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=user_content)
+    ]
     
+    response = structured_llm.invoke(messages)
     final_content = response.content
     
-    # Eksikse → sıfırdan yazma, kaldığı yerden tamamla
+    # Eksikse → kaldığı yerden tamamla
     if not _is_section_complete(final_content):
         print(f"   ⚠️ Bölüm eksik tespit edildi, kaldığı yerden tamamlanıyor...")
         final_content = _complete_incomplete_section(final_content, target_title, topic)
@@ -384,7 +380,6 @@ def run_editor_mode(state: ResearchState):
     report_title = state.get("report_title", topic)
     full_report = f"# {report_title}\n\n"
     
-    # 1. Outline sırasına göre birleştir
     incomplete_sections = []
     for title in outline:
         content = written_sections.get(title)
@@ -404,7 +399,6 @@ def run_editor_mode(state: ResearchState):
             full_report += f"## {title}\n\n*(Bu bölüm oluşturulurken teknik bir aksaklık yaşandı)*\n\n"
             incomplete_sections.append(title)
 
-    # 2. KAYNAK DOĞRULAMA
     valid_citations = _build_valid_citation_set(state)
     invalid_citations = _find_invalid_citations(full_report, valid_citations)
     
@@ -413,10 +407,9 @@ def run_editor_mode(state: ResearchState):
     if incomplete_sections:
         print(f"   ⚠️ {len(incomplete_sections)} eksik bölüm tespit edildi: {[t[:30] for t in incomplete_sections]}")
 
-    # 3. REFERANSLAR — sadece metin içinde atıf yapılanları dahil et
+    # REFERANSLAR
     full_report += "## REFERANSLAR\n\n"
     
-    # 3a. Akademik Kaynaklar
     full_report += "### Akademik Kaynaklar\n"
     seen_refs = set()
     selected_ids = state.get("selected_paper_ids", [])
@@ -446,7 +439,6 @@ def run_editor_mode(state: ResearchState):
     if not seen_refs:
         full_report += "- *Akademik kaynak bulunamadı.*\n"
     
-    # 3b. Web Kaynakları — sadece raporda atıf yapılanlar
     full_report += "\n### Web Kaynakları\n"
     web_sources = state.get("web_sources", [])
     seen_web = set()
