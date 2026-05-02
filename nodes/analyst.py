@@ -175,7 +175,7 @@ def analyst_node(state: ResearchState):
             "written_sections": written,
             "current_section_index": 0,
             "is_complete": False,
-            "feedback": feedback,
+            "feedback": "",  # Feedback'i temizle ki sonsuz döngüye girmesin
             "review_count": review_count + 1,
             "failed_section_titles": []
         }
