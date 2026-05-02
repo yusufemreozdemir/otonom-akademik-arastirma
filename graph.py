@@ -1,5 +1,5 @@
 from langgraph.graph import StateGraph, END
-from typing import Literal
+from typing import Literal, Union
 
 # Düğümleri import et
 from state import ResearchState
@@ -52,9 +52,20 @@ def route_analyst(state: ResearchState) -> Literal["analyst", "reviewer"]:
     else:
         return "analyst"
 
-# Reviewer için routing (Şimdilik direkt bitiriyoruz ama yapı hazır kalsın)
-def route_reviewer(state: ResearchState):
-    return END
+# Reviewer için routing — rapor kaldıysa ve deneme hakkı varsa analyst'e geri gönder
+def route_reviewer(state: ResearchState) -> Union[str, object]:
+    is_complete = state.get("is_complete", False)
+    review_count = state.get("review_count", 0)
+    
+    if is_complete:
+        print("✅ Reviewer Onayı: Rapor kabul edildi.")
+        return END
+    elif review_count < 3:
+        print(f"🔄 Reviewer Reddi: Rapor analyst'e geri gönderiliyor (Deneme {review_count + 1}/3).")
+        return "analyst"
+    else:
+        print("⚠️ Maksimum revizyon sayısına ulaşıldı. Rapor mevcut haliyle kabul ediliyor.")
+        return END
 
 # --- GRAFİK KURULUMU ---
 
@@ -91,9 +102,14 @@ def create_graph():
         route_analyst
     )
     
+    # Reviewer Kararı (Onay veya revizyon)
+    workflow.add_conditional_edges(
+        "reviewer",
+        route_reviewer
+    )
+    
     # 4. Normal Kenarlar
     workflow.add_edge("researcher", "filterer")
-    workflow.add_edge("reviewer", END)
 
     # 5. Derle
     app = workflow.compile()
