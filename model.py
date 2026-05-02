@@ -192,7 +192,7 @@ class RobustGeminiModel:
                         continue
 
                     if any(x in error_msg for x in ["503", "UNAVAILABLE", "500", "INTERNAL", "DISCONNECTED", "REMOTE ERROR", "CONNECTION"]):
-                        wait_time = 5 * (attempt + 1)
+                        wait_time = 20 * (attempt + 1)
                         print(f"⚠️ (Structured) Sunucu hatası ({error_msg[:30]}), {wait_time} sn bekleniyor...")
                         time.sleep(wait_time)
                         continue
