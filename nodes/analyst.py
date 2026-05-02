@@ -92,8 +92,24 @@ def _load_pdf_parts(state: ResearchState) -> list:
         title = title_map.get(paper_id, paper_id)
         
         try:
-            with open(pdf_path, "rb") as f:
-                pdf_data = base64.standard_b64encode(f.read()).decode("utf-8")
+            import fitz  # PyMuPDF
+            try:
+                doc = fitz.open(pdf_path)
+                if doc.page_count == 0:
+                    print(f"   [UYARI] PDF boş ({paper_id[:15]}), atlanıyor.")
+                    continue
+                
+                # Sadece ilk 50 sayfayı al (Çok uzun makaleler Gemini'ı yorabilir veya limitlere takılabilir)
+                if doc.page_count > 50:
+                    doc.select(range(50))
+                    
+                clean_pdf_bytes = doc.write()
+                pdf_data = base64.standard_b64encode(clean_pdf_bytes).decode("utf-8")
+                
+            except ImportError:
+                # fitz kurulu değilse eski yönteme dön, ama sadece ilk okumayı yap
+                with open(pdf_path, "rb") as f:
+                    pdf_data = base64.standard_b64encode(f.read()).decode("utf-8")
             
             parts.append({"type": "text", "text": f"\n--- Makale: {title} (ID: {paper_id}) ---"})
             parts.append({
@@ -102,7 +118,7 @@ def _load_pdf_parts(state: ResearchState) -> list:
             })
             loaded_count += 1
         except Exception as e:
-            print(f"   ⚠️ PDF yüklenemedi ({paper_id[:15]}): {e}")
+            print(f"   [UYARI] PDF yüklenemedi ({paper_id[:15]}): {e}")
     
     print(f"   📎 {loaded_count} PDF doğrudan modele veriliyor.")
     return parts

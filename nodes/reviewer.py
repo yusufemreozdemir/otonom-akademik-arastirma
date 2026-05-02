@@ -2,6 +2,9 @@ from typing import List
 from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
 
+import os
+import glob
+import pypandoc
 from state import ResearchState
 from model import get_model
 
@@ -87,6 +90,54 @@ def reviewer_node(state: ResearchState):
     if response.failed_sections:
         print(f"   Sorunlu Bölümler: {response.failed_sections}")
     print(f"   Feedback: {response.feedback}\n")
+
+    if response.is_satisfactory:
+        try:
+            report_title = state.get("report_title", state.get("final_topic", "arastirma_raporu"))
+            
+            report_dir = "reports"
+            if not os.path.exists(report_dir):
+                os.makedirs(report_dir)
+            
+            safe_title = "".join([c if c.isalnum() else "_" for c in report_title])[:60]
+            filename_md = os.path.join(report_dir, f"{safe_title}.md")
+            filename_pdf = os.path.join(report_dir, f"{safe_title}.pdf")
+            
+            # 1. Save Markdown
+            with open(filename_md, "w", encoding="utf-8") as f:
+                f.write(report)
+            print(f"📄 Markdown Rapor kaydedildi: {os.path.abspath(filename_md)}")
+            
+            # 2. Setup Pandoc and Typst Paths
+            winget_pkg_dir = os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WinGet\Packages")
+            typst_paths = glob.glob(os.path.join(winget_pkg_dir, "Typst.Typst*", "**", "typst.exe"), recursive=True)
+            pandoc_paths = glob.glob(os.path.join(winget_pkg_dir, "JohnMacFarlane.Pandoc*", "**", "pandoc.exe"), recursive=True)
+            
+            if typst_paths and pandoc_paths:
+                typst_dir = os.path.dirname(typst_paths[0])
+                pandoc_exe = pandoc_paths[0]
+                
+                # Add typst directory to PATH so pandoc can find it
+                if typst_dir not in os.environ["PATH"]:
+                    os.environ["PATH"] += os.pathsep + typst_dir
+                    
+                os.environ["PYPANDOC_PANDOC"] = pandoc_exe
+                
+                # 3. Convert to PDF using Typst
+                print("⚙️ PDF oluşturuluyor (Pandoc + Typst)...")
+                pypandoc.convert_text(
+                    report,
+                    'pdf',
+                    format='md',
+                    outputfile=filename_pdf,
+                    extra_args=['--pdf-engine=typst']
+                )
+                print(f"📄 PDF Rapor oluşturuldu: {os.path.abspath(filename_pdf)}")
+            else:
+                print("⚠️ Uyarı: Sistemde Pandoc veya Typst bulunamadığı için PDF oluşturulamadı.")
+                
+        except Exception as e:
+            print(f"❌ PDF dönüştürme hatası: {e}")
 
     return {
         "feedback": response.feedback,
