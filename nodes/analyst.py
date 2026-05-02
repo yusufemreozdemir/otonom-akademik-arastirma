@@ -202,6 +202,27 @@ def analyst_node(state: ResearchState):
 
 # --- ALT FONKSİYONLAR ---
 
+def _get_allowed_citations(state: ResearchState) -> str:
+    allowed = "İZİN VERİLEN ATIF FORMATLARI (Bunlar dışında HİÇBİR kaynağa/yazara atıf yapma!):\n"
+    
+    allowed += "[AKADEMİK MAKALELER]\n"
+    selected_ids = state.get("selected_paper_ids", [])
+    for s in state.get("arxiv_summaries", []):
+        if s.get("entry_id") in selected_ids:
+            authors = s.get("authors", [])
+            first_author = authors[0] if authors else ""
+            surname = first_author.split()[-1] if first_author else "Bilinmeyen"
+            year = s.get("published", "2023")[:4]
+            title = s.get("title", "Başlıksız")
+            allowed += f"- ({surname} et al., {year}) | {title}\n"
+            
+    allowed += "\n[WEB KAYNAKLARI]\n"
+    for src in state.get("web_sources", []):
+        title = src.get("title", "Başlıksız")
+        allowed += f"- ({title})\n"
+        
+    return allowed
+
 def run_architect_mode(state: ResearchState):
     print("🧠 Mod: MİMAR (Analiz ve Planlama)")
     
@@ -298,11 +319,22 @@ def run_batch_writer(state: ResearchState):
     web_text = state.get("web_data", "")[:30000]
     pdf_parts = _load_pdf_parts(state)
     
-    written_so_far = list(state.get("written_sections", {}).keys())
-    prev_context = ""
-    if written_so_far:
-        prev_context = f"\nŞimdiye kadar yazılan bölümler: {written_so_far}. Tekrar yazmaya gerek yok."
+    written_sections = state.get("written_sections", {})
+    written_titles = list(written_sections.keys())
     
+    # Geçmiş bağlam: O ana kadar yazılmış TÜM bölümlerin tam metnini al
+    history_context = ""
+    if current_index > 0:
+        context_parts = []
+        for i in range(0, current_index):
+            prev_title = outline[i]
+            prev_content = written_sections.get(prev_title, "")
+            if prev_content:
+                context_parts.append(f"--- ÖNCEKİ BÖLÜM: {prev_title} ---\n{prev_content}")
+        if context_parts:
+            history_context = "\n\n".join(context_parts)
+            history_context = f"\nRAPORUN ŞİMDİYE KADAR YAZILAN KISMI (Akışı ve bütünlüğü buna göre ayarla):\n{history_context}\n"
+
     reviewer_feedback = state.get("feedback", "")
     feedback_instruction = ""
     if reviewer_feedback:
@@ -311,6 +343,8 @@ def run_batch_writer(state: ResearchState):
     ÖNCEKİ İNCELEME GERİ BİLDİRİMİ (Bu sorunları DÜZELT):
     {reviewer_feedback}
     """
+    
+    allowed_citations = _get_allowed_citations(state)
     
     system_prompt = f"""Sen uzman bir akademik yazarsın.
     GÖREVİN: Aşağıdaki TEK bölüm başlığı için kapsamlı bir akademik bölüm yazmak.
@@ -323,16 +357,17 @@ def run_batch_writer(state: ResearchState):
     3. BAŞLIK: title alanına '{target_title}' yaz (DEĞİŞTİRME).
     4. KAYNAK SADAKATİ: Sadece sana verilen Akademik Makaleler (PDF) VE Web Kaynaklarını kullan.
     5. LATEX KULLANIMI: Teknik terimler ve formüller için LaTeX kullan.
-    6. HALÜSİNASYON YASAĞI: Kaynakta olmayan bilgi veya atıf EKLEME.
-    7. ATIF FORMATI:
-       - Akademik makaleler için: Yazar et al. (Yıl) — SADECE verilen PDF makalelerdeki yazarları kullan.
-       - Web kaynakları için: Site adı — SADECE verilen Web Kaynakları bölümündeki site adlarını kullan.
-    8. BÖLÜM UZUNLUĞU: En az 400 kelime, akademik ve detaylı.
-    9. BÖLÜM BÜTÜNLÜĞÜ: Bölümü MUTLAKA tamamla. Cümle ortasında bırakma.
-       SON CÜMLE MUTLAKA NOKTAYLA BİTMELİ. Eksik cümle YASAK.
-    10. YASAK ATIFLAR: 'Analiz', 'Analizler', 'Araştırma', 'Kaynak', 'Değerlendirme', 'İnceleme', 'Tavily AI Summary'
-        kelimeleri ASLA atıf olarak kullanılamaz.
-    {prev_context}{feedback_instruction}
+    6. KESİN ATIF KURALI: YALNIZCA aşağıda listelenen "İZİN VERİLEN ATIF FORMATLARI"nı kullanabilirsin. PDF içindeki metinlerde geçen ancak bu listede olmayan BŞKA YAZARLARA veya kaynaklara (örn. Kaplan, Chen vb.) KESİNLİKLE ATIF YAPMA. Halüsinasyon atıf uydurma.
+    7. BÖLÜM UZUNLUĞU: En az 400 kelime, akademik ve detaylı.
+    8. BÖLÜM BÜTÜNLÜĞÜ: Bölümü MUTLAKA tamamla. Cümle ortasında bırakma. SON CÜMLE MUTLAKA NOKTAYLA BİTMELİ.
+    9. YASAK ATIFLAR: 'Analiz', 'Analizler', 'Araştırma', 'Kaynak', 'Değerlendirme', 'İnceleme', 'Tavily AI Summary' kelimeleri ASLA atıf olarak kullanılamaz.
+    10. AKIŞ VE BAĞLAM: Sana verilen "GEÇMİŞ BAĞLAM"ı oku. Önceki bölümlerde anlatılanları tekrar etme, onların üzerine inşa et ve mantıksal bir geçiş sağla.
+    
+    {allowed_citations}
+    
+    {history_context}
+    
+    {feedback_instruction}
     """
     
     # Multimodal mesaj: metin + PDF dosyaları
@@ -411,61 +446,36 @@ def run_editor_mode(state: ResearchState):
     full_report += "## REFERANSLAR\n\n"
     
     full_report += "### Akademik Kaynaklar\n"
-    seen_refs = set()
     selected_ids = state.get("selected_paper_ids", [])
+    academic_added = False
     
     for s in state.get("arxiv_summaries", []):
-        if s['entry_id'] in selected_ids and s['title'] not in seen_refs:
+        if s['entry_id'] in selected_ids:
             authors = s.get('authors', ['Bilinmeyen Yazar'])
             first_author = authors[0] if authors else 'Bilinmeyen Yazar'
-            surname = first_author.split()[-1] if first_author else ''
             published = s.get('published', 'Tarih Bilinmiyor')
             entry_id = s.get('entry_id', '')
-            
-            if surname and surname in full_report:
-                full_report += f"- {first_author} et al. ({published[:4]}). **{s['title']}**. arXiv: {entry_id}\n"
-                seen_refs.add(s['title'])
+            full_report += f"- {first_author} et al. ({published[:4]}). **{s['title']}**. arXiv: {entry_id}\n"
+            academic_added = True
     
-    if not seen_refs:
-        for s in state.get("arxiv_summaries", []):
-            if s['entry_id'] in selected_ids and s['title'] not in seen_refs:
-                authors = s.get('authors', ['Bilinmeyen Yazar'])
-                first_author = authors[0] if authors else 'Bilinmeyen Yazar'
-                published = s.get('published', 'Tarih Bilinmiyor')
-                entry_id = s.get('entry_id', '')
-                full_report += f"- {first_author} et al. ({published[:4]}). **{s['title']}**. arXiv: {entry_id}\n"
-                seen_refs.add(s['title'])
-    
-    if not seen_refs:
+    if not academic_added:
         full_report += "- *Akademik kaynak bulunamadı.*\n"
     
     full_report += "\n### Web Kaynakları\n"
     web_sources = state.get("web_sources", [])
-    seen_web = set()
+    web_added = False
     
     for src in web_sources:
         url = src.get("url", "")
         title = src.get("title", "Başlıksız")
-        if url and url not in seen_web:
-            title_words = [w for w in title.split() if len(w) >= 3 and w[0].isupper()]
-            is_cited = any(word in full_report for word in title_words) if title_words else True
+        if url:
+            full_report += f"- {title}. Erişim: {url}\n"
+            web_added = True
             
-            if is_cited:
-                full_report += f"- {title}. Erişim: {url}\n"
-                seen_web.add(url)
-    
-    if not seen_web:
-        for src in web_sources:
-            url = src.get("url", "")
-            title = src.get("title", "Başlıksız")
-            if url and url not in seen_web:
-                full_report += f"- {title}. Erişim: {url}\n"
-                seen_web.add(url)
-    
-    if not seen_web:
+    if not web_added:
         full_report += "- *Web kaynağı bulunamadı.*\n"
 
-    print(f"✅ Rapor Hazır. (Akademik: {len(seen_refs)}, Web: {len(seen_web)} kaynak)")
+    print(f"✅ Rapor Hazır.")
     
     return {
         "final_report": full_report,
