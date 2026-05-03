@@ -372,7 +372,7 @@ def run_batch_writer(state: ResearchState):
     2. ÇIKTI FORMATI: TEK bir SectionOutput objesi döndür. title ve content alanlarını doldur.
     3. BAŞLIK: title alanına '{target_title}' yaz (DEĞİŞTİRME).
     4. KAYNAK SADAKATİ: Sadece sana verilen Akademik Makaleler (PDF) VE Web Kaynaklarını kullan.
-    5. LATEX KULLANIMI: Formüller için LaTeX kullan. Çıktın JSON olacağı için ters bölü (\) işaretini ÇİFT kullan! (Örn: \\text{{...}}). ÖNEMLİ: Formüllerde alt indis (subscript) kullanırken, alt indisi fonksiyon parantezlerinden SONRA kullanmaktan kaçın. Pandoc çevirisinde hata olmaması için alt indisleri harfin hemen yanına koy (Örn: G(x)_i E_i(x) YERİNE G_i(x) E_i(x) yaz).
+    5. LATEX KULLANIMI: Formüller için LaTeX kullan. Çıktın JSON olacağı için ters bölü (\) işaretini ÇİFT kullan! (Örn: \\text{{...}}). ÖNEMLİ: Formüllerde alt indis (subscript) kullanırken, alt indisi fonksiyon parantezlerinden SONRA kullanmaktan kaçın. Pandoc çevirisinde hata olmaması için alt indisleri harfin hemen yanına koy (Örn: G(x)_i E_i(x) YERİNE G_i(x) E_i(x) yaz). Metin içi formüllerde dolar işaretleri ile sembol arasında kesinlikle boşluk bırakma (Yanlış: $ z $, Doğru: $z$).
     6. KESİN ATIF KURALI: YALNIZCA aşağıda listelenen "İZİN VERİLEN ATIF FORMATLARI"nı kullanabilirsin. PDF içindeki metinlerde geçen ancak bu listede olmayan BAŞKA YAZARLARA veya kaynaklara (örn. Kaplan, Chen vb.) KESİNLİKLE ATIF YAPMA. Halüsinasyon atıf uydurma.
     7. BÖLÜM UZUNLUĞU: En az 400 kelime, akademik ve detaylı.
     8. BÖLÜM BÜTÜNLÜĞÜ: Bölümü MUTLAKA tamamla. Cümle ortasında bırakma. SON CÜMLE MUTLAKA NOKTAYLA BİTMELİ.
