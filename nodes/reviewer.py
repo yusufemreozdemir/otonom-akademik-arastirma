@@ -128,7 +128,7 @@ def reviewer_node(state: ResearchState):
                 pypandoc.convert_text(
                     report,
                     'pdf',
-                    format='md',
+                    format='markdown-citations',
                     outputfile=filename_pdf,
                     extra_args=['--pdf-engine=typst']
                 )
