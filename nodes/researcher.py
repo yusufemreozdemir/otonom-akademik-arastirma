@@ -12,42 +12,49 @@ def researcher_node(state: ResearchState):
     
     # Manager'ın belirlediği arama terimlerini al
     protocol = state.get("research_protocol", {})
-    queries = protocol.get("search_queries", []) 
+    arxiv_queries = protocol.get("arxiv_queries") or []
+    tavily_queries = protocol.get("tavily_queries") or []
+    
+    # Geriye dönük uyumluluk veya LLM hatası durumunda fallback
+    if not arxiv_queries and not tavily_queries:
+        old_queries = protocol.get("search_queries") or [state.get("user_topic", "research")]
+        arxiv_queries = old_queries
+        tavily_queries = old_queries
+
     topic = state.get("final_topic", state.get("user_topic", "arastirma"))
     
-    # Eğer sorgu yoksa kullanıcının girdiği sorguyu kullan
-    if not queries:
-        queries = [state["user_topic"]]
-
     # Araştırma sonuçlarının tutulacağı değişkenler
     all_arxiv_data = []
     web_context = ""
-    all_web_sources = [] # Web kaynaklarını ayrıca topla (referans bölümü için)
+    all_web_sources = [] 
     arxiv_consecutive_fails = 0
 
-    # Sorgular için araştırma döngüsü
-    for q in queries:
-        # ArXiv'den her sorgu için veri çek (Eğer çok fazla hata almadıysak)
+    # 1. ArXiv Aramaları
+    print(f"--- ArXiv Aramaları Başlatılıyor ({len(arxiv_queries)} sorgu) ---")
+    for q in arxiv_queries:
         if arxiv_consecutive_fails < 2:
             results = search_arxiv(query = q, max_results = 25) 
             if results:
                 all_arxiv_data.extend(results)
-                arxiv_consecutive_fails = 0 # Başarılı olursa sayacı sıfırla
+                arxiv_consecutive_fails = 0
             else:
                 arxiv_consecutive_fails += 1
                 print(f"⚠️ Uyarı: '{q}' sorgusu için ArXiv'den sonuç alınamadı.")
         else:
-            print(f"⏭️ ArXiv servis dışı veya limitli olduğu için '{q}' için ArXiv atlanıyor.")
+            print(f"⏭️ ArXiv servis dışı veya limitli olduğu için '{q}' atlanıyor.")
+        
+        # Rate limit koruması
+        time.sleep(random.randint(10, 20))
 
-        # Web araması yap (ArXiv başarısız olsa bile devam et)
+    # 2. Tavily Web Aramaları
+    print(f"--- Tavily Web Aramaları Başlatılıyor ({len(tavily_queries)} sorgu) ---")
+    for q in tavily_queries:
         web_text, web_sources = search_web(query = q)
         web_context += f"\n--- Search Query: {q} ---\n{web_text}"
         all_web_sources.extend(web_sources)
-
-        # Bir sonraki sorgu öncesi bekleme (Rate limit koruması)
-        # Eğer çok hata aldıysak uzun bekle, yoksa normal bekle
-        sleep_time = random.randint(20, 30) if arxiv_consecutive_fails >= 2 else random.randint(10, 20)
-        time.sleep(sleep_time)
+        
+        # Rate limit koruması
+        time.sleep(random.randint(5, 10))
 
     # Tavily çıktılarını kaydet
     save_tavily_data(web_context, topic)

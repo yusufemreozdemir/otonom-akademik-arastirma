@@ -10,7 +10,8 @@ class ResearchProtocol(BaseModel):
     is_clear: bool = Field(description = "Kullanıcının konusu yeterince net mi? (True/False)")
     clarification_question: Optional[str] = Field(description = "Eğer net değilse sorulacak soru.")
     final_topic: Optional[str] = Field(description = "Netleşen akademik araştırma başlığı.")
-    search_queries: Optional[List[str]] = Field(description = "ArXiv ve web araması için İngilizce arama terimleri listesi (5 adet).")
+    arxiv_queries: Optional[List[str]] = Field(description = "ArXiv akademik araması için İngilizce teknik terimler listesi (5 adet).")
+    tavily_queries: Optional[List[str]] = Field(description = "Tavily web araması için İngilizce güncel internet verileri, bloglar ve haberler için arama terimleri listesi (5 adet).")
 
 def manager_node(state: ResearchState):
     """ Kullanıcı ile mülakat yapar ve araştırma protokolünü belirler. """
@@ -30,36 +31,34 @@ def manager_node(state: ResearchState):
             messages = [HumanMessage(content = "Lütfen akademik bir araştırma konusu belirle.")] # varsayılan mesaj
 
     system_prompt = """Sen bir akademik araştırma projesi yöneticisisin. 
-Görevin kullanıcının araştırma konusunu anlamak, gerekirse netleştirmek ve ArXiv + web araması için etkili arama terimleri oluşturmak.
+Görevin kullanıcının araştırma konusunu anlamak, gerekirse netleştirmek ve ArXiv ile Tavily aramaları için özelleştirilmiş arama terimleri oluşturmak.
 
 ADIM 1 — KONU NETLEŞTİRME:
 - Kullanıcı çok genel veya belirsiz bir konu verdiyse (örn: "yapay zeka"), 'is_clear' = False yap ve kısa, net bir soru sor.
-- Kullanıcı makul düzeyde spesifik bir konu verdiyse (örn: "transformer mimarilerinde dikkat mekanizmaları" veya "LLM'lerde fine-tuning yöntemleri"), bunu KABUL ET ve 'is_clear' = True yap.
-- Aşırı detay bekleme. Konu bir akademik araştırma raporu yazılabilecek düzeyde netse yeterlidir.
+- Kullanıcı makul düzeyde spesifik bir konu verdiyse (örn: "transformer mimarilerinde dikkat mekanizmaları"), bunu KABUL ET ve 'is_clear' = True yap.
 
-ADIM 2 — ARAMA TERİMLERİ OLUŞTURMA (search_queries):
-Arama terimleri İNGİLİZCE olmalıdır. ArXiv'de etkili sonuç getirmesi için şu piramit stratejisini uygula:
+ADIM 2 — ARAMA TERİMLERİ OLUŞTURMA:
+Arama terimleri İNGİLİZCE olmalıdır. İki farklı kaynak için farklı stratejiler uygula:
 
-5 adet arama terimi üret:
-  1. GENİŞ TERİM: Konunun ana alanını kapsayan geniş bir terim (örn: "large language models")
-  2. ORTA TERİM 1: Konunun spesifik alt alanı (örn: "transformer attention mechanisms")
-  3. ORTA TERİM 2: Konuyla ilgili farklı bir açı veya uygulama alanı (örn: "efficient attention architectures")
-  4. ODAKLI TERİM: Konunun teknik detayına inen bir terim (örn: "multi-head attention optimization")
-  5. SURVEY/REVIEW TERİMİ: Konuyla ilgili derleme makale bulacak terim (örn: "attention mechanisms survey" veya "transformer architectures review")
+1. ArXiv Araması (arxiv_queries - 5 adet):
+- Akademik ve teknik literatüre odaklan.
+- Piramit stratejisi: Geniş alan, spesifik alt alan, teknik detay, farklı uygulama ve survey/review terimleri üret.
+- Örn: "large language models", "transformer attention optimization", "efficient attention mechanisms survey".
+
+2. Tavily Web Araması (tavily_queries - 5 adet):
+- Güncel internet verileri, bloglar, haberler, endüstri raporları ve genel bilgiye odaklan.
+- Akademik olmayan ama konuyu destekleyen güncel gelişmeleri, popüler tartışmaları veya uygulama örneklerini hedefle.
+- Örn: "latest LLM breakthroughs 2024", "AI industry trends blog", "commercial applications of transformers".
 
 ARAMA TERİMİ KURALLARI:
-- Terimleri ArXiv arama motoruna uygun, doğal İngilizce ifadeler olarak yaz.
-- Her terim 2-5 kelime arasında olsun.
-- Çok uzun veya cümle şeklinde terimler YAZMA.
-- Kısaltmalar kullanılabilir (LLM, GAN, RL, NLP vb.)
+- Doğal İngilizce ifadeler kullan (2-5 kelime).
+- Cümle kurma, sadece anahtar kelime öbekleri yaz.
+- Kısaltmalar (LLM, NLP vb.) kullanabilirsin.
 
 ÖZEL DURUM — REVİZYON:
-Eğer filterer_feedback bilgisi varsa, bu önceki aramanın yeterli sonuç getirmediği anlamına gelir.
-Bu durumda:
-- Önceki terimleri TEKRARLAMA, tamamen farklı açılardan yaklaş.
-- Daha dar terimler üretme, aksine biraz daha geniş veya alternatif bakış açıları dene.
-- Filterer'ın geri bildirimini dikkate alarak yaklaşımını değiştir.
-- Konuya komşu alanlardan veya farklı terminolojilerden faydalanabilirsin."""
+Eğer filterer_feedback varsa, önceki terimleri tekrarlama ve geri bildirimi dikkate alarak farklı açılar/terminolojiler dene.
+- ArXiv için: Daha farklı teknik terimler veya komşu disiplinler.
+- Tavily için: Daha güncel olaylar veya farklı sektör raporları."""
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", system_prompt),

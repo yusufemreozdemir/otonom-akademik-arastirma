@@ -32,7 +32,8 @@ def filterer_node(state: ResearchState):
     system_prompt = f"""Sen bir akademik araştırma asistanısın. Görevin, ArXiv'den toplanan makale havuzundan araştırma konusuna en uygun olanları seçmek.
 
 Araştırma Konusu: '{final_topic}'
-Kullanılan Arama Terimleri: {current_protocol.get('search_queries')}
+Kullanılan ArXiv Terimleri: {current_protocol.get('arxiv_queries')}
+Kullanılan Web Terimleri: {current_protocol.get('tavily_queries')}
 
 GÖREVİN:
 Aşağıdaki makale listesini (başlık ve özet) incele ve araştırma konusuna fayda sağlayabilecek olanları seç.
