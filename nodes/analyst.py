@@ -377,7 +377,7 @@ def run_batch_writer(state: ResearchState):
     7. BÖLÜM UZUNLUĞU: En az 400 kelime, akademik ve detaylı.
     8. BÖLÜM BÜTÜNLÜĞÜ: Bölümü MUTLAKA tamamla. Cümle ortasında bırakma. SON CÜMLE MUTLAKA NOKTAYLA BİTMELİ.
     9. YASAK ATIFLAR: 'Analiz', 'Analizler', 'Araştırma', 'Kaynak', 'Değerlendirme', 'İnceleme', 'Tavily AI Summary' kelimeleri ASLA atıf olarak kullanılamaz.
-    10. AKIŞ VE BAĞLAM: Sana verilen "GEÇMİŞ BAĞLAM"ı oku. Önceki bölümlerde anlatılanları tekrar etme, onların üzerine inşa et ve mantıksal bir geçiş sağla.
+    10. AKIŞ VE BAĞLAM: Sana verilen "GEÇMİŞ BAĞLAM"ı oku. Önceki bölümlerde anlatılanları tekrar etme, onların üzerine inşa et ve mantıksal bir geçiş sağla. Daha önce tanımlanmış kavramları, tanımları, formülleri yeniden tanımlama sadece referans ver. 
     
     {allowed_citations}
     

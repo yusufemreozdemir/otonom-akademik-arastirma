@@ -1,6 +1,7 @@
 import os
 import requests
 import time
+from connection_handler import handle_connection_error
 
 # PDF'lerin kaydedileceği kalıcı dizin
 PAPERS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "papers")
@@ -45,6 +46,10 @@ def download_pdf(pdf_url: str, paper_id: str = None) -> str:
             return file_path
         
         except Exception as e:
+            # 🌐 İnternet kesintisi kontrolü
+            if handle_connection_error(e, context=f"PDF indirme: {os.path.basename(file_path)}"):
+                continue  # Bağlantı geldi, tekrar dene
+            
             if attempt < max_retries - 1:
                 wait_time = (attempt + 1) * 5
                 print(f"⚠️ İndirme Hatası ({pdf_url}): {e}. {wait_time} sn sonra tekrar deneniyor... ({attempt+1}/{max_retries})")

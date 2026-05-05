@@ -2,6 +2,7 @@ import os
 from typing import List, Dict
 from tavily import TavilyClient
 import arxiv
+from connection_handler import handle_connection_error
 
 tavily_client = TavilyClient(api_key = os.getenv("TAVILY_API_KEY")) # Tavily Client Başlatma
 
@@ -47,6 +48,10 @@ def search_arxiv(query: str, max_results: int = 100) -> List[Dict]:
             return results
             
         except Exception as e:
+            # 🌐 İnternet kesintisi kontrolü
+            if handle_connection_error(e, context=f"ArXiv araması: '{query}'"):
+                continue  # Bağlantı geldi, tekrar dene
+            
             error_str = str(e).lower()
             if "429" in error_str:
                 wait_time = (attempt + 1) * 30 # Bekleme süresi artırıldı (30, 60, 90 saniye)
@@ -97,6 +102,10 @@ def search_web(query: str) -> tuple:
             return context, sources
 
         except Exception as e:
+            # 🌐 İnternet kesintisi kontrolü
+            if handle_connection_error(e, context=f"Tavily web araması: '{query}'"):
+                continue  # Bağlantı geldi, tekrar dene
+            
             error_str = str(e).lower()
             if "10054" in error_str or "connection" in error_str or "reset" in error_str:
                 print(f"⚠️ Tavily Bağlantı Hatası (TCP Reset): {e}. Yeniden bağlanılıyor... (Deneme {attempt+1}/{max_retries})")

@@ -6,6 +6,7 @@ from collections import deque
 from langchain_google_genai import ChatGoogleGenerativeAI
 from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable, InternalServerError
 from langchain_core.runnables import RunnableLambda
+from connection_handler import handle_connection_error
 
 class APIKeyManager:
     """
@@ -118,57 +119,82 @@ class RobustGeminiModel:
             model=self.model_name,
             temperature=self.temperature,
             google_api_key=api_key,
-            # Retry'ı kapatıyoruz çünkü biz yöneteceğiz
-            max_retries=0 
+            max_retries=0,
+            # HTTP seviyesinde timeout ekliyoruz (Ağ kopmalarına karşı)
+            request_timeout=600 
         )
 
     def invoke(self, *args, **kwargs):
         """
         İsteği yapar, hata olursa key değiştirip tekrar dener.
         10 dakikalık (600sn) zaman aşımı kontrolü eklenmiştir.
+        İnternet kesintisi durumunda kullanıcıya sorar ve bağlantı gelince devam eder.
         """
         max_attempts = 10 
+        attempt = 0
         
-        for attempt in range(max_attempts):
+        while attempt < max_attempts:
             llm = self._get_current_llm()
             
-            # Zaman aşımı kontrolü için ThreadPoolExecutor kullanıyoruz
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                future = executor.submit(llm.invoke, *args, **kwargs)
+            # with bloğu yerine manuel yönetiyoruz ki takılan thread'i beklemeyelim
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(llm.invoke, *args, **kwargs)
+            
+            try:
+                result = future.result(timeout=600)
+                executor.shutdown(wait=False)
+                return result
+            
+            except concurrent.futures.TimeoutError:
+                # wait=False önemli: Takılan ağ thread'ini BEKLEME, yoluna devam et
+                executor.shutdown(wait=False) 
                 
-                try:
-                    # 10 dakikalık (600 saniye) limit
-                    return future.result(timeout=600)
+                # Zaman aşımı olduğunda da key değiştirelim (session temizliği için)
+                with key_manager.lock:
+                    if llm.google_api_key in key_manager.active_keys:
+                        key_manager.active_keys.rotate(-1)
                 
-                except concurrent.futures.TimeoutError:
-                    print(f"⚠️ ZAMAN AŞIMI (10 Dakika): Model ...{key_manager._get_key_suffix(llm.google_api_key)} ile yanıt vermedi. Yeniden deneniyor (Deneme {attempt+1}/{max_attempts}).")
-                    continue # Döngü başına dön ve tekrar dene
+                new_key = key_manager.get_current_key()
+                print(f"⚠️ ZAMAN AŞIMI (10 Dakika): Model ...{key_manager._get_key_suffix(llm.google_api_key)} ile yanıt vermedi.")
+                print(f"🔄 Key rotasyonu yapıldı, yeni key: ...{key_manager._get_key_suffix(new_key)}. Yeniden deneniyor (Deneme {attempt+1}/{max_attempts}).")
+                attempt += 1
+                continue
+            
+            except Exception as e:
+                executor.shutdown(wait=False)
+                # 🌐 İnternet kesintisi kontrolü
+                if handle_connection_error(e, context=f"LLM API çağrısı (Deneme {attempt+1}/{max_attempts})"):
+                    # Kullanıcı 'y' dedi ve bağlantı geldi → attempt tüketmeden tekrar dene
+                    continue
                 
-                except Exception as e:
-                    error_msg = str(e).upper()
-                    if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                        exhausted_key = llm.google_api_key
-                        key_manager.mark_as_exhausted(exhausted_key)
-                        
-                        try:
-                            new_key = key_manager.get_current_key()
-                            print(f"🔄 (String Match) 429 Tespit Edildi. ...{key_manager._get_key_suffix(exhausted_key)} çıkarıldı, yeni key: ...{key_manager._get_key_suffix(new_key)}")
-                        except:
-                            print(f"🔄 (String Match) 429 Tespit Edildi. ...{key_manager._get_key_suffix(exhausted_key)} çıkarıldı, BAŞKA KEY KALMADI!")
-                        
-                        time.sleep(1)
-                        continue
+                error_msg = str(e).upper()
+                if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                    exhausted_key = llm.google_api_key
+                    key_manager.mark_as_exhausted(exhausted_key)
+                    
+                    try:
+                        new_key = key_manager.get_current_key()
+                        print(f"🔄 (String Match) 429 Tespit Edildi. ...{key_manager._get_key_suffix(exhausted_key)} çıkarıldı, yeni key: ...{key_manager._get_key_suffix(new_key)}")
+                    except:
+                        print(f"🔄 (String Match) 429 Tespit Edildi. ...{key_manager._get_key_suffix(exhausted_key)} çıkarıldı, BAŞKA KEY KALMADI!")
+                    
+                    time.sleep(1)
+                    attempt += 1
+                    continue
 
-                    # Diğer sunucu hataları (503/500/Disconnect)
-                    if any(x in error_msg for x in ["503", "UNAVAILABLE", "500", "INTERNAL", "DISCONNECTED", "REMOTE ERROR", "CONNECTION"]):
-                        wait_time = 20 * (attempt + 1)
-                        print(f"⚠️ Google Sunucu Hatası ({error_msg[:30]}). {wait_time} sn bekleniyor...")
-                        time.sleep(wait_time)
-                        continue
+                # Diğer sunucu hataları (503/500/Disconnect)
+                if any(x in error_msg for x in ["503", "UNAVAILABLE", "500", "INTERNAL", "DISCONNECTED", "REMOTE ERROR", "CONNECTION"]):
+                    wait_time = 20 * (attempt + 1)
+                    print(f"⚠️ Google Sunucu Hatası ({error_msg[:30]}). {wait_time} sn bekleniyor...")
+                    time.sleep(wait_time)
+                    attempt += 1
+                    continue
 
-                    # Diğer beklenmeyen hatalarda (örn: prompt çok uzun) döngüyü kırmak lazım
-                    print(f"❌ Beklenmeyen Hata: {e}")
-                    raise e
+                # Diğer beklenmeyen hatalarda (örn: prompt çok uzun) döngüyü kırmak lazım
+                print(f"❌ Beklenmeyen Hata: {e}")
+                raise e
+            
+            attempt += 1
         
         raise Exception("Maksimum deneme sayısına ulaşıldı, tüm keyler tükenmiş olabilir veya sürekli zaman aşımı yaşanıyor.")
 
@@ -179,47 +205,70 @@ class RobustGeminiModel:
         """
         def _structured_invoke(input_data, config=None, **kwargs):
             max_attempts = 10
-            for attempt in range(max_attempts):
+            attempt = 0
+            
+            while attempt < max_attempts:
                 llm = self._get_current_llm()
                 structured_llm = llm.with_structured_output(schema)
                 
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                    # input_data ve kwargs'ı doğru geçiyoruz
-                    future = executor.submit(structured_llm.invoke, input_data, config, **kwargs)
+                # Manuel executor yönetimi
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                future = executor.submit(structured_llm.invoke, input_data, config, **kwargs)
+                
+                try:
+                    result = future.result(timeout=600)
+                    executor.shutdown(wait=False)
+                    return result
+                
+                except concurrent.futures.TimeoutError:
+                    executor.shutdown(wait=False)
                     
-                    try:
-                        # 10 dakikalık (600 saniye) limit
-                        return future.result(timeout=600)
+                    # Key rotasyonu
+                    with key_manager.lock:
+                        if llm.google_api_key in key_manager.active_keys:
+                            key_manager.active_keys.rotate(-1)
                     
-                    except concurrent.futures.TimeoutError:
-                        print(f"⚠️ ZAMAN AŞIMI (10 Dakika - Structured): Model ...{key_manager._get_key_suffix(llm.google_api_key)} ile yanıt vermedi. Yeniden deneniyor (Deneme {attempt+1}/{max_attempts}).")
+                    new_key = key_manager.get_current_key()
+                    print(f"⚠️ ZAMAN AŞIMI (10 Dakika - Structured): Model ...{key_manager._get_key_suffix(llm.google_api_key)} ile yanıt vermedi.")
+                    print(f"🔄 Key rotasyonu yapıldı, yeni key: ...{key_manager._get_key_suffix(new_key)}. Yeniden deneniyor (Deneme {attempt+1}/{max_attempts}).")
+                    attempt += 1
+                    continue
+                
+                except Exception as e:
+                    executor.shutdown(wait=False)
+                    # 🌐 İnternet kesintisi kontrolü
+                    if handle_connection_error(e, context=f"Structured LLM çağrısı (Deneme {attempt+1}/{max_attempts})"):
+                        # Kullanıcı 'y' dedi ve bağlantı geldi → attempt tüketmeden tekrar dene
                         continue
                     
-                    except Exception as e:
-                        error_msg = str(e).upper()
+                    error_msg = str(e).upper()
+                    
+                    # 429/RESOURCE_EXHAUSTED kontrolü
+                    if isinstance(e, ResourceExhausted) or "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                        exhausted_key = llm.google_api_key
+                        key_manager.mark_as_exhausted(exhausted_key)
                         
-                        # 429/RESOURCE_EXHAUSTED kontrolü
-                        if isinstance(e, ResourceExhausted) or "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
-                            exhausted_key = llm.google_api_key
-                            key_manager.mark_as_exhausted(exhausted_key)
-                            
-                            try:
-                                new_key = key_manager.get_current_key()
-                                print(f"🔄 (Structured) 429/Kota Hatası. ...{key_manager._get_key_suffix(exhausted_key)} çıkarıldı, yeni key: ...{key_manager._get_key_suffix(new_key)}")
-                            except:
-                                print(f"🔄 (Structured) 429/Kota Hatası. ...{key_manager._get_key_suffix(exhausted_key)} çıkarıldı, BAŞKA KEY KALMADI!")
-                            
-                            time.sleep(1)
-                            continue
+                        try:
+                            new_key = key_manager.get_current_key()
+                            print(f"🔄 (Structured) 429/Kota Hatası. ...{key_manager._get_key_suffix(exhausted_key)} çıkarıldı, yeni key: ...{key_manager._get_key_suffix(new_key)}")
+                        except:
+                            print(f"🔄 (Structured) 429/Kota Hatası. ...{key_manager._get_key_suffix(exhausted_key)} çıkarıldı, BAŞKA KEY KALMADI!")
+                        
+                        time.sleep(1)
+                        attempt += 1
+                        continue
 
-                        if any(x in error_msg for x in ["503", "UNAVAILABLE", "500", "INTERNAL", "DISCONNECTED", "REMOTE ERROR", "CONNECTION"]):
-                            wait_time = 20 * (attempt + 1)
-                            print(f"⚠️ (Structured) Sunucu hatası ({error_msg[:30]}), {wait_time} sn bekleniyor...")
-                            time.sleep(wait_time)
-                            continue
-                        
-                        print(f"❌ (Structured) Beklenmeyen Hata: {e}")
-                        raise e
+                    if any(x in error_msg for x in ["503", "UNAVAILABLE", "500", "INTERNAL", "DISCONNECTED", "REMOTE ERROR", "CONNECTION"]):
+                        wait_time = 20 * (attempt + 1)
+                        print(f"⚠️ (Structured) Sunucu hatası ({error_msg[:30]}), {wait_time} sn bekleniyor...")
+                        time.sleep(wait_time)
+                        attempt += 1
+                        continue
+                    
+                    print(f"❌ (Structured) Beklenmeyen Hata: {e}")
+                    raise e
+                
+                attempt += 1
             
             raise Exception("Maksimum deneme sayısına ulaşıldı veya sürekli zaman aşımı yaşanıyor.")
             

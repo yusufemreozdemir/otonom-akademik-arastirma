@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 # Graph yapısını içe aktar
 from graph import create_graph
+from connection_handler import handle_connection_error, wait_for_connection, is_connection_error
 
 def main():
     print("\n" + "="*60)
@@ -54,6 +55,17 @@ def main():
             current_state = result
             
         except Exception as e:
+            # 🌐 İnternet kesintisi kontrolü — state korunarak kaldığı yerden devam
+            if is_connection_error(e):
+                if wait_for_connection(context="Graph çalışması sırasında"):
+                    # Bağlantı geldi → current_state korunuyor, döngü başa dönecek
+                    print("🔄 Sistem kaldığı yerden devam ediyor...")
+                    continue
+                else:
+                    # Kullanıcı iptal etti
+                    print("❌ İşlem iptal edildi. Mevcut ilerleme korunuyor.")
+                    break
+            
             print(f"\n❌ KRİTİK HATA: {e}")
             break
 
